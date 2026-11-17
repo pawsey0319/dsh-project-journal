@@ -5,7 +5,7 @@
 把 DeepSeek Harness（DSH）里散落在各个会话中的「项目进展」整理成一条可回看的阶段链：每个项目一份进展记录，包含阶段、下一步和问题档案，并支持把会话一键迁回它真正所属的项目。
 
 - npm 包名：`@pawsey0319/dsh-project-journal`
-- 当前版本：`0.2.1`（见 [CHANGELOG.md](CHANGELOG.md)）
+- 当前版本：`0.2.2`（见 [CHANGELOG.md](CHANGELOG.md)）
 - 许可证：[MIT](LICENSE) © 2026 pawsey0319
 - 宿主：DSH（`manifestVersion: 1`，需要 Web 客户端与 `slots` 服务）
 
@@ -63,15 +63,16 @@ DSH 的会话是按工作目录组织的，但真实工作往往跨目录：调�
 - 插件会用宿主自带的 `webServer`、`storageDomain`、`sessionQuery`、`llm`、`sessionController`、`workspaceController`（按需）与客户端 `slots`，无需额外安装；
 - 插件会调用宿主模型做会话归纳；模型未就绪时只有「手动记录 / 迁移 / 分支」可用，自动归纳会跳过。
 
-### 方式 A：插件管理器安装（推荐）
+### 方式 A：插件管理器安装（本地路径 / link，推荐）
 
-已发布到 npm 时，直接装指定版本（不需要本地路径）：
+> **本包尚未上架 npm**（`npm publish` 需要 2FA/OTP，至今没有发布过任何 npm 版本）。因此**不要**用 `plugin_manager action=install_bundle target="@pawsey0319/dsh-project-journal@版本号"` 这种 npm 版本号安装，那条路现在会 404。当前可用方式：
+>
+> 1. 先按**方式 C** `git clone` 本仓库到本地；
+> 2. 再用本节的**本地路径**安装，或按**方式 B** 把 clone 目录 `link:` 进 profile。
+>
+> 等包真正上架 npm 之后，才可以改回按版本号安装。
 
-```text
-plugin_manager action=install_bundle target="@pawsey0319/dsh-project-journal@0.2.1"
-```
-
-本地开发目录也可以装（把路径换成仓库绝对路径）：
+本地路径安装（把路径换成 clone 后的仓库绝对路径）：
 
 ```text
 plugin_manager action=install_bundle target="/绝对路径/dsh-project-journal"
@@ -337,8 +338,8 @@ dsh-project-journal/
 
 Project Journal keeps a durable, per-project chain of phases, next steps and problem records for every DSH session, and can migrate a session back to the project it really belongs to.
 
-- Package: `@pawsey0319/dsh-project-journal` (v0.2.1, MIT)
-- Install it from the DSH Plugin Manager and enable the bundle; it registers a sidebar entry, a per-session move button and a full-screen overlay panel. Local development can link the repo into `~/.dsh/profiles/<profile>/package.json` and add it to `dsh.profile.bundles`.
+- Package: `@pawsey0319/dsh-project-journal` (v0.2.2, MIT; not published to npm yet — publishing requires 2FA)
+- Install it from the DSH Plugin Manager using the local checkout path (npm is not published yet) and enable the bundle; it registers a sidebar entry, a per-session move button and a full-screen overlay panel. Local development can link the repo into `~/.dsh/profiles/<profile>/package.json` and add it to `dsh.profile.bundles`.
 - Action clicks go through a single `act()` helper (72 call sites) that emits a `ui:<action>` beacon and routes failures to the panel error bar instead of throwing into the host.
 - Data stays in `~/.dsh/project-journal/journal.json`; summaries are produced by the model configured in DSH, and the model never receives file contents or images.
 - Writes use GET + query on purpose: DSH prefix routes only serve `GET`/`HEAD`. The surface is unauthenticated, so never expose the DSH port publicly.

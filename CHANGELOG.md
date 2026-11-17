@@ -3,6 +3,14 @@
 本插件的所有重要变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.2.2] - 2026-11-17
+
+docs only：更正 npm 上架状态说明（`npm publish` 需要 2FA，当前未上架任何版本），无代码变更。
+
+### 文档
+
+- README「安装」：删除「已发布到 npm 时…」条件句与不存在的 `install_bundle target="@pawsey0319/dsh-project-journal@版本号"` 命令，改为明确说明「npm 尚未上架 npm（发布需要 2FA）」，并给出当前可用路径——先 clone 仓库，再按本地路径安装或 `link:` 到 profile；英文 quick start 同步。
+
 ## [0.2.1] - 2026-11-17
 
 可用级维修：按 `docs/research/journal-final-audit.md` 的审查结论逐条修复（J-01…J-18），数据格式保持 journal **version 3** 兼容，无需手动迁移。
