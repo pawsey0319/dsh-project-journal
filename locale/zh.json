@@ -1,0 +1,19 @@
+{
+  "name": "项目进展",
+  "description": "按项目汇总所有会话的阶段链与问题档案，并支持把会话一键迁移回它真正所属的项目。",
+  "meta": {
+    "title": "项目进展",
+    "description": "按项目汇总所有会话的阶段链与问题档案，并支持把会话一键迁移回它真正所属的项目。"
+  },
+  "labels": {
+    "sidebar.footer.action": "进展",
+    "sidebar.workspaces.session.row.action": "移入其他项目",
+    "shell.overlay": "项目进展面板",
+    "panel.title": "项目进展",
+    "panel.search": "搜索阶段 / 问题…",
+    "panel.settings": "设置",
+    "panel.refresh": "刷新",
+    "panel.close": "关闭",
+    "entry.title": "{open} 个未解决问题 · {next} 条下一步"
+  }
+}

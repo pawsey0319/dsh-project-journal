@@ -1,0 +1,33 @@
+# ── 运行时数据（真实位置在 ~/.dsh/project-journal/，永不进仓库）────────────
+# 下面几条是「万一有人把数据拷进仓库目录」时的兜底：journal.json 是用户历史，
+# backups/ 是自动备份，trash/ 是被删阶段的产物，都可能含隐私内容。
+journal.json
+backups/
+trash/
+**/project-journal/backups/
+**/project-journal/trash/
+
+# 兜底：DSH 配置/数据目录绝不应该出现在仓库里
+.dsh/
+
+# ── 依赖与打包产物 ───────────────────────────────────────────────────────
+node_modules/
+*.tgz
+*.tar.gz
+dist/
+.pnpm-debug.log*
+
+# ── 系统 / 编辑器 ───────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# ── 本地临时文件与日志 ───────────────────────────────────────────────────
+*.log
+*.bak
+*.bak-*
+tmp/
+.tmp/
+coverage/

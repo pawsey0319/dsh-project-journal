@@ -1,0 +1,19 @@
+{
+  "name": "Project Journal",
+  "description": "Phase chains and problem records for every session in a project, plus one-click session migration between projects.",
+  "meta": {
+    "title": "Project Journal",
+    "description": "Phase chains and problem records for every session in a project, plus one-click session migration between projects."
+  },
+  "labels": {
+    "sidebar.footer.action": "Journal",
+    "sidebar.workspaces.session.row.action": "Move to another project",
+    "shell.overlay": "Project Journal panel",
+    "panel.title": "Project Journal",
+    "panel.search": "Search phases / problems…",
+    "panel.settings": "Settings",
+    "panel.refresh": "Refresh",
+    "panel.close": "Close",
+    "entry.title": "{open} open problems · {next} next steps"
+  }
+}

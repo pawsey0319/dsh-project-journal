@@ -1,0 +1,61 @@
+{
+  "name": "@pawsey0319/dsh-project-journal",
+  "version": "0.2.0",
+  "type": "module",
+  "description": "项目进展日志：按项目汇总所有会话的阶段链 + 问题档案，并支持把会话一键迁移到它真正所属的项目",
+  "author": "pawsey0319",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pawsey0319/dsh-project-journal.git"
+  },
+  "homepage": "https://github.com/pawsey0319/dsh-project-journal#readme",
+  "bugs": {
+    "url": "https://github.com/pawsey0319/dsh-project-journal/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "project-journal",
+    "project-progress",
+    "session",
+    "cordis"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "journal-store.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "test/*",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}
