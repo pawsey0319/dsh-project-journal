@@ -1,6 +1,6 @@
 {
   "name": "@pawsey0319/dsh-project-journal",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "项目进展日志：按项目汇总所有会话的阶段链 + 问题档案，并支持把会话一键迁移到它真正所属的项目",
   "author": "pawsey0319",
@@ -31,6 +31,7 @@
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
+    "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json"
   },
   "files": [

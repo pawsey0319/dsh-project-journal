@@ -5,7 +5,7 @@
 把 DeepSeek Harness（DSH）里散落在各个会话中的「项目进展」整理成一条可回看的阶段链：每个项目一份进展记录，包含阶段、下一步和问题档案，并支持把会话一键迁回它真正所属的项目。
 
 - npm 包名：`@pawsey0319/dsh-project-journal`
-- 当前版本：`0.2.0`（见 [CHANGELOG.md](CHANGELOG.md)）
+- 当前版本：`0.2.1`（见 [CHANGELOG.md](CHANGELOG.md)）
 - 许可证：[MIT](LICENSE) © 2026 pawsey0319
 - 宿主：DSH（`manifestVersion: 1`，需要 Web 客户端与 `slots` 服务）
 
@@ -42,17 +42,17 @@ DSH 的会话是按工作目录组织的，但真实工作往往跨目录：调�
 | `sidebar.workspaces.session.row.action` | 会话行右侧的「移入其他项目」按钮 |
 | `shell.overlay` | 全屏的「项目进展」面板（搜索、阶段链、分支、回收站、设置） |
 
-面板内的动作点击统一经过 `act()` 入口（共 71 处，另有一个 `stopClickBubble` 只做事件拦截）：打一条 `ui:<动作>` 诊断信标，并把同步/异步异常收敛到面板顶部的错误条，不会冒泡到宿主或其它插件的全局点击处理。
+面板内的动作点击统一经过 `act()` 入口（共 72 处，另有一个 `stopClickBubble` 只做事件拦截）：打一条 `ui:<动作>` 诊断信标，并把同步/异步异常收敛到面板顶部的错误条，不会冒泡到宿主或其它插件的全局点击处理。
 
-## 截图
+## 界面说明（暂无截图）
 
-> 截图占位（待补）。建议发布前补进 `docs/images/`，拍摄时脱敏真实项目名与会话内容。
+> 本包**不附带截图**：`docs/` 不在 npm 发布文件列表里，README 里指向 `docs/images/*.png` 的图片在 npm 页面必然加载失败，因此这里只做文字说明。需要配图时请在发布流程里单独上传，或把截图放进 `files[]` 覆盖的目录（例如 `images/`）后自行加链接。
 
-| 位置 | 说明 | 文件 |
-| --- | --- | --- |
-| 面板总览 | 左侧项目列表（含「未归属」）+ 右侧阶段时间线 + 顶部「接下来」汇总条 | `docs/images/panel-overview.png`（占位） |
-| 阶段卡与问题档案 | 标题/摘要/状态/来源会话/产物 chip，问题区区分「未解决」 | `docs/images/phase-problems.png`（占位） |
-| 分支视图 | 分支页签「主线 / 从阶段K分叉」、`↺ 重做` 首节点、灰显只读前缀 | `docs/images/branches.png`（占位） |
+| 位置 | 说明 |
+| --- | --- |
+| 面板总览 | 左侧项目列表（含「未归属」桶）+ 右侧阶段时间线 + 顶部「接下来」汇总条 |
+| 阶段卡与问题档案 | 标题/摘要/状态/来源会话/产物 chip；问题区用「未解决」标记区分处理状态 |
+| 分支视图 | 分支页签「主线 / 从阶段 K 分叉」、`↺ 重做` 首节点、只读前缀灰显 |
 
 ## 安装
 
@@ -64,6 +64,14 @@ DSH 的会话是按工作目录组织的，但真实工作往往跨目录：调�
 - 插件会调用宿主模型做会话归纳；模型未就绪时只有「手动记录 / 迁移 / 分支」可用，自动归纳会跳过。
 
 ### 方式 A：插件管理器安装（推荐）
+
+已发布到 npm 时，直接装指定版本（不需要本地路径）：
+
+```text
+plugin_manager action=install_bundle target="@pawsey0319/dsh-project-journal@0.2.1"
+```
+
+本地开发目录也可以装（把路径换成仓库绝对路径）：
 
 ```text
 plugin_manager action=install_bundle target="/绝对路径/dsh-project-journal"
@@ -114,7 +122,11 @@ git clone https://github.com/pawsey0319/dsh-project-journal.git ~/.dsh-plugins/d
 cd ~/.dsh-plugins/dsh-project-journal && npm test    # 可选：先跑单测
 ```
 
-然后按方式 A 或 B 安装 `~/.dsh-plugins/dsh-project-journal`。更新：`git pull` 后 **disable → enable**（Host 半代码改动必须走这一步；只改 `client.js` 时 HMR 会自动热替换）。
+然后按方式 A 或 B 安装 `~/.dsh-plugins/dsh-project-journal`。
+
+> 注意：`~/.dsh-plugins/dsh-project-journal` 只是 clone 出来的**暂存源码目录**，不是插件管理器实际安装的位置。装好之后，真正的插件在 `~/.dsh/profiles/<profile>/node_modules/@pawsey0319/dsh-project-journal`；不要在那个目录里 `npm test`（那里没有 `test/`，也不是开发副本），跑测试请在 clone 目录执行。
+
+更新：`git pull` 后 **disable → enable**（Host 半代码改动必须走这一步；只改 `client.js` 时 HMR 会自动热替换）。
 
 ### 装载自检
 
@@ -264,6 +276,7 @@ curl -s "$B/x-journal/api/backfill?action=reset"   # 游标重置为 -1 并重�
 8. **产物打开依赖系统 `open`**，非 macOS 环境该动作无效，只会得到「找不到/可能已移动」提示。
 9. **没有多用户概念**：单机单人插件，`journal.json` 不做并发写保护（两个 DSH 实例同时写会互相覆盖）；`journal.json` 体积随历史线性增长，建议定期清理彻底不用的分支与阶段。
 10. **阶段是派生视图**：手改会进入后续归纳与开分支的上下文（`phaseContext` / `branchContext` / 种子），从而影响后续模型判断；修订记录就是为了让这件事可追溯。
+11. **自动归纳会改写阶段标题/摘要/下一步**：同一阶段出现新进展时，模型会更新它（标题被重写是预期行为）；只有手改过的阶段（`manual: true`）才固定不被覆盖。想保留某版就点开阶段改一次，或从修订记录回退。
 
 ## 开发与测试
 
@@ -275,7 +288,7 @@ node --check index.js && node --check client.js && node --check journal-store.js
 npm test          # node --test test/*.test.mjs
 ```
 
-测试覆盖 `journal-store.js` 的摘要归并、问题 quote 校验、阶段状态迁移、分支上下文与 journal 迁移等纯逻辑（无需 DSH 在跑）。装载回归需要真实 DSH：
+测试覆盖 `journal-store.js` 的摘要归并、问题 quote 校验、阶段状态迁移、分支上下文与 journal 迁移等纯逻辑（无需 DSH 在跑），以及 `index.js` 前缀路由的回归用例（回收站清空、导出过滤软删阶段、一致性检查/修复同口径、永久删除解隐藏、未归属会话迁移、config 数值校验）。路由用例用临时 `HOME` + 手写 journal 夹具，不读写真实 `~/.dsh/project-journal`。装载回归需要真实 DSH：
 
 ```bash
 B=http://127.0.0.1:<GUI 端口>
@@ -313,7 +326,8 @@ dsh-project-journal/
 ├── cordis.patch.yml         # bundle patch：把插件 insert 进 profile
 ├── package.json             # dsh 元数据：manifestVersion / bundle.patch / client.platform=web
 ├── locale/{zh,en}.json      # 插件名与描述
-├── test/journal-store.test.mjs
+├── test/journal-store.test.mjs  # 存储层单测
+├── test/routes.test.mjs         # Host 路由回归（临时 HOME）
 ├── README.md
 ├── LICENSE
 └── CHANGELOG.md
@@ -323,9 +337,9 @@ dsh-project-journal/
 
 Project Journal keeps a durable, per-project chain of phases, next steps and problem records for every DSH session, and can migrate a session back to the project it really belongs to.
 
-- Package: `@pawsey0319/dsh-project-journal` (v0.2.0, MIT)
+- Package: `@pawsey0319/dsh-project-journal` (v0.2.1, MIT)
 - Install it from the DSH Plugin Manager and enable the bundle; it registers a sidebar entry, a per-session move button and a full-screen overlay panel. Local development can link the repo into `~/.dsh/profiles/<profile>/package.json` and add it to `dsh.profile.bundles`.
-- Action clicks go through a single `act()` helper (71 call sites) that emits a `ui:<action>` beacon and routes failures to the panel error bar instead of throwing into the host.
+- Action clicks go through a single `act()` helper (72 call sites) that emits a `ui:<action>` beacon and routes failures to the panel error bar instead of throwing into the host.
 - Data stays in `~/.dsh/project-journal/journal.json`; summaries are produced by the model configured in DSH, and the model never receives file contents or images.
 - Writes use GET + query on purpose: DSH prefix routes only serve `GET`/`HEAD`. The surface is unauthenticated, so never expose the DSH port publicly.
 - Verify with `npm test` and `node --check index.js client.js journal-store.js`, then `curl $B/x-journal/api/health`.

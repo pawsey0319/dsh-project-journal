@@ -26,11 +26,15 @@ import {
   backupJournal,
   buildDigest,
   contentText,
+  dirBytes,
   ensureProject,
+  journalLoadError,
   loadJournal,
+  migrateJournal,
   newId,
   phaseBrief,
   phaseContext,
+  purgeTrash,
   resequence,
   saveJournal,
 } from './journal-store.js'
@@ -107,35 +111,16 @@ function scanArtifacts(root, sinceMs, limit = 24) {
 
 const MAX_ATTEMPTS = 3
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-
-function dirBytes(root) {
-  let total = 0
-  let files = 0
-  const walk = (dir, depth) => {
-    if (depth > 6) return
-    let entries
-    try {
-      entries = readdirSync(dir, { withFileTypes: true })
-    } catch {
-      return
-    }
-    for (const entry of entries) {
-      const full = `${dir}/${entry.name}`
-      if (entry.isDirectory()) {
-        walk(full, depth + 1)
-        continue
-      }
-      if (!entry.isFile()) continue
-      try {
-        total += statSync(full).size
-        files += 1
-      } catch {}
-    }
-  }
-  walk(root, 0)
-  return { bytes: total, files }
+// 数值配置的合法区间：越界或非数字一律忽略（保留旧值），绝不把 NaN 写进 journal。
+const NUMERIC_BOUNDS = {
+  idleDelayMs: [1000, 600000],
+  minNewEvents: [1, 100],
+  maxInputChars: [1000, 400000],
+  maxPhaseContext: [1, 50],
+  throttleMs: [0, 60000],
 }
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 function json(value, status = 200) {
   return new Response(JSON.stringify(value), {
@@ -351,6 +336,19 @@ export function apply(ctx) {
           delete state.sessions[record.sessionId]
           changed = true
         }
+      }
+    }
+    // 自愈：旧版本永久删除阶段时只清了 phaseIds，没清 hidden/hiddenBy，导致会话永久隐藏。
+    // 只要 hiddenBy 指向的阶段已经不存在，就把会话放回可见列表。
+    const livePhaseIds = new Set()
+    for (const project of Object.values(state.projects ?? {})) {
+      for (const phase of project.phases ?? []) livePhaseIds.add(phase.id)
+    }
+    for (const record of Object.values(state.sessions)) {
+      if (record.hidden === true && typeof record.hiddenBy === 'string' && !livePhaseIds.has(record.hiddenBy)) {
+        delete record.hidden
+        delete record.hiddenBy
+        changed = true
       }
     }
     return changed
@@ -675,7 +673,11 @@ export function apply(ctx) {
       // The session's phases travel with it: the target chain shows the work
       // that session contributed, and the source chain stops claiming it.
       const record = state.sessions[sessionId]
-      const sourceProject = sourceId === null ? undefined : state.projects[sourceId]
+      // 会话不在任何 workspace 行里（典型：未归属会话）时，sourceId 是 null，
+      // 但它的阶段还记在「未归属」项目里。只改 record.projectId 会让阶段和会话分家
+      // （会话指向本项目、阶段留在未归属），所以这里把未归属当成隐式来源一并搬走。
+      const journalSourceId = sourceId === null && record !== undefined && record.projectId === UNASSIGNED ? UNASSIGNED : sourceId
+      const sourceProject = journalSourceId === null ? undefined : state.projects[journalSourceId]
       const targetProject = state.projects[targetProjectId]
       const moved = new Set(record?.phaseIds ?? [])
       const carried = []
@@ -1053,11 +1055,15 @@ async function resolvePhaseSource(project, phase) {
     }
     const now = new Date().toISOString()
     let softDeleted = 0
-    for (const phase of busy) {
+    // 分支里的每个阶段都要进回收站：以前只处理「有内容」的阶段，空阶段被直接丢弃，
+    // 用户既看不到也恢复不了（例如刚 fork 出来还没用的重做阶段）。
+    for (const phase of phases) {
       phase.deletedAt = now
       phase.deletedBy = 'branch-delete'
-      phase.trashedArtifacts = trashPhaseArtifacts(project, phase)
-      setSessionsHidden(project, phase, true)
+      if (busy.includes(phase)) {
+        phase.trashedArtifacts = trashPhaseArtifacts(project, phase)
+        setSessionsHidden(project, phase, true)
+      }
       phase.branchId = MAIN_BRANCH
       delete phase.mergedFrom
       softDeleted += 1
@@ -1287,6 +1293,8 @@ async function resolvePhaseSource(project, phase) {
     state.projects = raw.projects
     state.sessions = raw.sessions
     if (raw.backfill !== undefined && raw.backfill !== null) state.backfill = raw.backfill
+    // 旧版备份（v1/v2）恢复后立即迁移，别让磁盘上留着一份旧结构直到下次保存或重启。
+    migrateJournal(state)
     saveJournal(state)
     reconcile()
     return { ok: true, file: name, projects: Object.keys(state.projects).length, sessions: Object.keys(state.sessions).length }
@@ -1416,6 +1424,27 @@ async function resolvePhaseSource(project, phase) {
     }
   }
 
+  // 一致性检查与修复必须共用同一口径，否则就会出现「横幅常驻但修 0 条」。
+  // 软删除的阶段仍在项目里（只是进回收站），所以它算「存在的阶段」，不能算 missing。
+  function consistencyIssues(project) {
+    const ids = new Set(project.phases.map((phase) => phase.id))
+    const issues = []
+    for (const record of Object.values(state.sessions)) {
+      if (record.projectId !== project.id) continue
+      for (const phaseId of Array.isArray(record.phaseIds) ? record.phaseIds : []) {
+        if (!ids.has(phaseId)) issues.push({ kind: 'session-points-to-missing-phase', sessionId: record.sessionId, phaseId })
+      }
+    }
+    for (const phase of project.phases) {
+      for (const sessionId of Array.isArray(phase.sessions) ? phase.sessions : []) {
+        const record = state.sessions[sessionId]
+        if (record === undefined) issues.push({ kind: 'phase-lists-missing-session', phaseId: phase.id, sessionId })
+        else if (record.projectId !== project.id) issues.push({ kind: 'phase-session-in-other-project', phaseId: phase.id, sessionId })
+      }
+    }
+    return issues
+  }
+
   function buildState() {
     const { list, snap } = visibleProjects()
     const byPath = new Map()
@@ -1458,7 +1487,7 @@ async function resolvePhaseSource(project, phase) {
         branches: (project.branches ?? []).map((branch) => ({
           ...branch,
           phaseCount: branchPhases(project, branch.id).length,
-          sessionCount: Object.values(state.sessions).filter((record) => record.projectId === project.id && record.branchId === branch.id).length,
+          sessionCount: Object.values(state.sessions).filter((record) => record.projectId === project.id && record.branchId === branch.id && record.hidden !== true).length,
         })),
         sessions,
         suggestions: suggestionsFor(project),
@@ -1481,26 +1510,7 @@ async function resolvePhaseSource(project, phase) {
             trashed: Array.isArray(phase.trashedArtifacts) ? phase.trashedArtifacts.map((item) => item.label) : [],
           })),
         consistency: (() => {
-          const liveIds = new Set(
-            project.phases
-              .filter((phase) => phase.deletedAt === undefined || phase.deletedAt === null)
-              .map((phase) => phase.id),
-          )
-          const issues = []
-          for (const record of Object.values(state.sessions)) {
-            if (record.projectId !== project.id) continue
-            for (const phaseId of Array.isArray(record.phaseIds) ? record.phaseIds : []) {
-              if (!liveIds.has(phaseId)) issues.push({ kind: 'session-points-to-missing-phase', sessionId: record.sessionId, phaseId })
-            }
-          }
-          for (const phase of project.phases) {
-            if (phase.deletedAt !== undefined && phase.deletedAt !== null) continue
-            for (const sessionId of Array.isArray(phase.sessions) ? phase.sessions : []) {
-              const record = state.sessions[sessionId]
-              if (record === undefined) issues.push({ kind: 'phase-lists-missing-session', phaseId: phase.id, sessionId })
-              else if (record.projectId !== project.id) issues.push({ kind: 'phase-session-in-other-project', phaseId: phase.id, sessionId })
-            }
-          }
+          const issues = consistencyIssues(project)
           return { ok: issues.length === 0, count: issues.length, issues: issues.slice(0, 20) }
         })(),
       }
@@ -1523,6 +1533,7 @@ async function resolvePhaseSource(project, phase) {
         .filter((record) => record.state === 'summarizing')
         .map((record) => record.sessionId),
       beacons: beacons.slice(-12),
+      journalError: journalLoadError(),
     }
   }
 
@@ -1580,6 +1591,10 @@ async function resolvePhaseSource(project, phase) {
             backups = readdirSync(BACKUP_DIR).filter((name) => name.endsWith('.json')).length
           } catch {}
           const workspace = workspaceRows()
+          const routeErrors = beacons
+            .filter((entry) => entry.message === '路由异常')
+            .slice(-5)
+            .map((entry) => ({ at: entry.at, ...(entry.detail ?? {}) }))
           return json({
             ok: true,
             route: routePath,
@@ -1589,11 +1604,15 @@ async function resolvePhaseSource(project, phase) {
             fileBytes,
             backups,
             projects: Object.keys(state.projects).length,
+            projectsTotal: Object.keys(state.projects).length,
+            projectsVisible: visibleProjects().list.length,
             phases: Object.values(state.projects).reduce((sum, project) => sum + project.phases.length, 0),
             problems: Object.values(state.projects).reduce((sum, project) => sum + project.phases.reduce((n, phase) => n + phase.problems.length, 0), 0),
             sessions: records.length,
             sessionStates: stats,
             failures,
+            routeErrors,
+            journalError: journalLoadError(),
             queue: queue.length,
             timers: timers.size,
             workerRunning,
@@ -1607,15 +1626,22 @@ async function resolvePhaseSource(project, phase) {
         if (pathname.endsWith('/api/export')) {
           const projectId = q.get('projectId') ?? ''
           const project = state.projects[projectId]
-          if (project === undefined) return json({ ok: false, error: 'project not found' }, 404)
-          const lines = [`# ${project.title} · 项目进展`, '', `> 导出时间 ${new Date().toISOString()} · 阶段 ${project.phases.length} · 未解决问题 ${project.phases.reduce((n, phase) => n + phase.problems.filter((problem) => problem.status === 'open').length, 0)}`, '']
+          if (project === undefined) return json({ ok: false, error: 'project-missing' }, 404)
+          // 回收站里的阶段不是项目进展：导出时必须排除，否则编号错乱、正文混入已删内容。
+          const livePhases = project.phases.filter((phase) => phase.deletedAt === undefined || phase.deletedAt === null)
+          const deletedCount = project.phases.length - livePhases.length
+          const openProblems = livePhases.reduce((n, phase) => n + (phase.problems ?? []).filter((problem) => problem.status === 'open').length, 0)
+          const deletedNote = deletedCount > 0 ? `（另有 ${deletedCount} 个回收站阶段未导出）` : ''
+          const lines = [`# ${project.title} · 项目进展`, '', `> 导出时间 ${new Date().toISOString()} · 阶段 ${livePhases.length}${deletedNote} · 未解决问题 ${openProblems}`, '']
           const branches = Array.isArray(project.branches) && project.branches.length > 0 ? project.branches : [{ id: 'main', title: '主线', status: 'active' }]
           for (const branch of branches) {
-            const phases = project.phases.filter((phase) => (phase.branchId ?? MAIN_BRANCH) === branch.id).sort((left, right) => left.seq - right.seq)
+            const phases = livePhases.filter((phase) => (phase.branchId ?? MAIN_BRANCH) === branch.id).sort((left, right) => left.seq - right.seq)
             if (phases.length === 0) continue
             lines.push(`## ${branch.title ?? branch.id}${branch.status === 'active' ? '' : `（${branch.status === 'merged' ? '已合并' : '已放弃'}）`}`, '')
+            let index = 0
             for (const phase of phases) {
-              lines.push(`### ${phase.seq}. ${phase.title}${phase.status === 'done' ? '' : phase.status === 'active' ? '（进行中）' : '（计划中）'}`)
+              index += 1
+              lines.push(`### ${index}. ${phase.title}${phase.status === 'done' ? '' : phase.status === 'active' ? '（进行中）' : '（计划中）'}`)
               if (typeof phase.summary === 'string' && phase.summary !== '') lines.push('', phase.summary)
               const steps = Array.isArray(phase.nextSteps) ? phase.nextSteps : []
               if (steps.length > 0) lines.push('', '还要做：', ...steps.map((step) => `- ${step}`))
@@ -1648,19 +1674,24 @@ async function resolvePhaseSource(project, phase) {
           return json({ ok: resolved !== null, model: resolved, error: modelError })
         }
         if (pathname.endsWith('/api/config')) {
+          const ignored = []
           for (const key of ['provider', 'model', 'auto', 'idleDelayMs', 'minNewEvents', 'maxInputChars', 'maxPhaseContext', 'throttleMs']) {
             const value = q.get(key)
             if (value === null) continue
             if (key === 'auto') state.config.auto = value === '1' || value === 'true'
-            else if (typeof state.config[key] === 'number') state.config[key] = Number(value)
-            else state.config[key] = value
+            else if (NUMERIC_BOUNDS[key] !== undefined) {
+              const num = Number(value)
+              const bounds = NUMERIC_BOUNDS[key]
+              if (Number.isFinite(num) && num >= bounds[0] && num <= bounds[1]) state.config[key] = Math.round(num)
+              else ignored.push(key)
+            } else state.config[key] = value
           }
           modelCache = null
           modelError = null
           if (state.config.auto === true && state.backfill.state !== 'done') state.backfill.state = 'running'
           saveJournal(state)
           if (state.config.auto === true) worker()
-          return json({ ok: true, config: state.config })
+          return json({ ok: true, config: state.config, ignored })
         }
         if (pathname.endsWith('/api/backfill')) {
           const action = q.get('action')
@@ -1922,17 +1953,14 @@ async function resolvePhaseSource(project, phase) {
           if (q.get('action') === 'delete') {
             const removedPhaseId = q.get('phaseId')
             if (flag('hard')) {
-              const removedPhase = project.phases.find((item) => item.id === removedPhaseId)
               project.phases = project.phases.filter((item) => item.id !== removedPhaseId)
+              // 永久删除后，任何「只因这个阶段而隐藏」的会话都必须回到项目/未归属列表，
+              // 否则它会永久消失（不在项目里、不在未归属里、也不会再被自动归纳）。
               for (const record of Object.values(state.sessions)) {
-                if (record.projectId !== project.id) continue
                 if (Array.isArray(record.phaseIds)) record.phaseIds = record.phaseIds.filter((id) => id !== removedPhaseId)
-              }
-              if (removedPhase !== undefined && Array.isArray(removedPhase.sessions)) {
-                for (const sessionId of removedPhase.sessions) {
-                  const record = state.sessions[sessionId]
-                  if (record === undefined) continue
-                  record.phaseIds = Array.isArray(record.phaseIds) ? record.phaseIds.filter((id) => id !== removedPhaseId) : []
+                if (record.hidden === true && record.hiddenBy === removedPhaseId) {
+                  delete record.hidden
+                  delete record.hiddenBy
                 }
               }
             } else {
@@ -2028,15 +2056,8 @@ async function resolvePhaseSource(project, phase) {
         if (pathname.endsWith('/api/trash/empty')) {
           if (q.get('confirm') !== '1') return json({ error: 'need-confirm' }, 400)
           const projectId = q.get('projectId')
-          const targets = existsSync(TRASH_DIR)
-            ? readdirSync(TRASH_DIR, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name)
-            : []
-          const chosen = projectId === null ? targets : targets.filter((id) => id === projectId)
-          let removed = { bytes: 0, files: 0 }
-          for (const id of chosen) {
-            const size = dirBytes(`${TRASH_DIR}/${id}`)
-            rmSync(`${TRASH_DIR}/${id}`, { recursive: true, force: true })
-            removed = { bytes: removed.bytes + size.bytes, files: removed.files + size.files }
+          const purged = purgeTrash(projectId)
+          for (const id of purged.projects) {
             // 文件已清空：保留回收站记录，但标记产物不可再恢复。
             const project = state.projects[id]
             if (project !== undefined) {
@@ -2049,7 +2070,7 @@ async function resolvePhaseSource(project, phase) {
             }
           }
           saveJournal(state)
-          return json({ ok: true, removed, projects: chosen })
+          return json({ ok: true, removed: purged.removed, projects: purged.projects })
         }
         if (pathname.endsWith('/api/consistency/fix')) {
           const projectId = q.get('projectId')
@@ -2058,28 +2079,27 @@ async function resolvePhaseSource(project, phase) {
           let removedFromPhase = 0
           let removedFromRecord = 0
           for (const project of projects) {
-            const phaseIds = new Set((project.phases ?? []).map((phase) => phase.id))
-            for (const phase of project.phases ?? []) {
-              const sessions = Array.isArray(phase.sessions) ? phase.sessions : []
-              const kept = sessions.filter((sessionId) => {
-                const record = state.sessions[sessionId]
-                if (record === undefined) return false
-                if (record.projectId !== project.id) return false
-                return true
-              })
-              removedFromPhase += sessions.length - kept.length
-              phase.sessions = kept
-            }
-            for (const record of Object.values(state.sessions)) {
-              if (record.projectId !== project.id) continue
-              const ids = Array.isArray(record.phaseIds) ? record.phaseIds : []
-              const kept = ids.filter((id) => phaseIds.has(id))
-              removedFromRecord += ids.length - kept.length
-              record.phaseIds = kept
+            // 用与横幅完全相同的判定来修，保证「报几条就能修几条」。
+            for (const issue of consistencyIssues(project)) {
+              if (issue.kind === 'session-points-to-missing-phase') {
+                const record = state.sessions[issue.sessionId]
+                if (record === undefined || !Array.isArray(record.phaseIds)) continue
+                const before = record.phaseIds.length
+                record.phaseIds = record.phaseIds.filter((id) => id !== issue.phaseId)
+                removedFromRecord += before - record.phaseIds.length
+                continue
+              }
+              const phase = project.phases.find((item) => item.id === issue.phaseId)
+              if (phase === undefined || !Array.isArray(phase.sessions)) continue
+              const before = phase.sessions.length
+              phase.sessions = phase.sessions.filter((id) => id !== issue.sessionId)
+              removedFromPhase += before - phase.sessions.length
             }
           }
-          saveJournal(state)
-          return json({ ok: true, removedFromPhase, removedFromRecord })
+          const changed = removedFromPhase + removedFromRecord
+          const remaining = projects.reduce((total, project) => total + consistencyIssues(project).length, 0)
+          if (changed > 0) saveJournal(state)
+          return json({ ok: remaining === 0, removedFromPhase, removedFromRecord, changed, remaining, noop: changed === 0 })
         }
         if (pathname.endsWith('/api/phase/restore-revision')) {
           const project = state.projects[q.get('projectId')]

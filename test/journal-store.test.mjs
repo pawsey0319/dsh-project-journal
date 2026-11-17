@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -119,4 +119,33 @@ test('saveJournal/loadJournal 往返一致', () => {
   assert.equal(loaded.projects.p1.phases.length, 1)
   assert.equal(loaded.projects.p1.phases[0].title, '往返')
   assert.equal(loaded.version, 3)
+})
+
+test('purgeTrash 只清指定项目的回收站，清全部后可重复调用', () => {
+  mkdirSync(join(store.TRASH_DIR, 'p1'), { recursive: true })
+  mkdirSync(join(store.TRASH_DIR, 'p2'), { recursive: true })
+  writeFileSync(join(store.TRASH_DIR, 'p1', 'a.bin'), Buffer.alloc(10))
+  writeFileSync(join(store.TRASH_DIR, 'p2', 'b.bin'), Buffer.alloc(4))
+  const one = store.purgeTrash('p1')
+  assert.deepEqual(one.projects, ['p1'])
+  assert.equal(one.removed.files, 1)
+  assert.equal(one.removed.bytes, 10)
+  assert.equal(existsSync(join(store.TRASH_DIR, 'p1')), false)
+  assert.equal(existsSync(join(store.TRASH_DIR, 'p2', 'b.bin')), true)
+  const rest = store.purgeTrash()
+  assert.deepEqual(rest.projects, ['p2'])
+  assert.equal(rest.removed.files, 1)
+  assert.deepEqual(store.purgeTrash(), { removed: { bytes: 0, files: 0 }, projects: [] })
+})
+
+test('journal.json 损坏时另存为 .corrupt-* 并暴露错误，不静默清空', () => {
+  store.saveJournal(store.emptyJournal())
+  writeFileSync(store.FILE, '{ this is not json')
+  const loaded = store.loadJournal()
+  assert.deepEqual(loaded.projects, {})
+  assert.equal(existsSync(store.FILE), false)
+  const error = store.journalLoadError()
+  assert.ok(error !== null)
+  assert.match(error.file, /\.corrupt-/)
+  assert.equal(existsSync(error.file), true)
 })

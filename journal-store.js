@@ -4,7 +4,7 @@
  * Everything in this file is free of Cordis dependencies so it can be exercised
  * directly with `node -e` while iterating on merge behaviour.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -22,6 +22,68 @@ const MAX_PHASE_TITLE = 40
 const MAX_PHASE_SUMMARY = 900
 const MAX_PROBLEM_TEXT = 600
 const STATUSES = new Set(['done', 'active', 'planned'])
+
+/** Last loadJournal() failure (corrupt file), or null when loading was fine. */
+let loadError = null
+
+export function journalLoadError() {
+  return loadError
+}
+
+/** Total bytes / file count below a directory tree (missing dirs count as zero). */
+export function dirBytes(root) {
+  let total = 0
+  let files = 0
+  const walk = (dir, depth) => {
+    if (depth > 6) return
+    let entries
+    try {
+      entries = readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        walk(full, depth + 1)
+        continue
+      }
+      if (!entry.isFile()) continue
+      try {
+        total += statSync(full).size
+        files += 1
+      } catch {}
+    }
+  }
+  walk(root, 0)
+  return { bytes: total, files }
+}
+
+/**
+ * Delete the on-disk trash of one project (or every project when projectId is
+ * null). Returns what was removed and which project dirs were touched, so the
+ * caller never has to touch the filesystem itself (and tests can call it).
+ */
+export function purgeTrash(projectId = null) {
+  let targets = []
+  try {
+    targets = readdirSync(TRASH_DIR, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+  } catch {
+    return { removed: { bytes: 0, files: 0 }, projects: [] }
+  }
+  const chosen = projectId === null || projectId === undefined ? targets : targets.filter((id) => id === String(projectId))
+  let bytes = 0
+  let files = 0
+  for (const id of chosen) {
+    const stats = dirBytes(join(TRASH_DIR, id))
+    bytes += stats.bytes
+    files += stats.files
+    rmSync(join(TRASH_DIR, id), { recursive: true, force: true })
+  }
+  return { removed: { bytes, files }, projects: chosen }
+}
 
 export function emptyJournal() {
   return {
@@ -46,7 +108,7 @@ export function emptyJournal() {
 export function loadJournal() {
   try {
     const raw = JSON.parse(readFileSync(FILE, 'utf8'))
-    if (raw === null || typeof raw !== 'object') return emptyJournal()
+    if (raw === null || typeof raw !== 'object') throw new Error('journal.json 顶层不是对象')
     const state = { ...emptyJournal(), ...raw }
     state.config = { ...emptyJournal().config, ...(raw.config ?? {}) }
     state.projects = raw.projects ?? {}
@@ -56,8 +118,23 @@ export function loadJournal() {
       if (record.state === 'summarizing' || record.state === 'queued') record.state = 'idle'
     }
     migrateJournal(state)
+    loadError = null
     return state
-  } catch {
+  } catch (error) {
+    // A corrupt journal must never be silently replaced by an empty one: keep the
+    // original bytes aside so the user can still recover from disk, and expose the
+    // failure so the panel can tell them what happened.
+    if (existsSync(FILE)) {
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+      const corrupt = `${FILE}.corrupt-${stamp}`
+      try {
+        renameSync(FILE, corrupt)
+        loadError = { at: new Date().toISOString(), file: corrupt, reason: String(error?.message ?? error) }
+        console.warn('[project-journal] journal.json 无法解析，已另存为', corrupt, loadError.reason)
+      } catch (renameError) {
+        loadError = { at: new Date().toISOString(), file: FILE, reason: `无法解析且无法另存：${String(renameError?.message ?? renameError)}` }
+      }
+    }
     return emptyJournal()
   }
 }

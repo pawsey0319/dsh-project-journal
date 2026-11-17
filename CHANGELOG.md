@@ -3,6 +3,39 @@
 本插件的所有重要变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.2.1] - 2026-11-17
+
+可用级维修：按 `docs/research/journal-final-audit.md` 的审查结论逐条修复（J-01…J-18），数据格式保持 journal **version 3** 兼容，无需手动迁移。
+
+### 修复
+
+- **J-01（blocker）清空回收站必然 500**：`index.js` 调用 `rmSync` 却没有从 `node:fs` 导入，回收站非空时返回 `{"error":"internal","detail":"rmSync is not defined"}`（回收站为空反而 200，导致「一按就错」）。清理逻辑抽到 `journal-store.js` 的 `purgeTrash()` 并补齐导入，路由只负责标记与保存；新增路由回归用例覆盖「回收站非空时清空返回 ok」。
+- **J-02（high）导出 Markdown 混入回收站阶段**：`/api/export` 先过滤 `deletedAt` 再按分支排序，标题编号按活阶段重排（不再出现「阶段 4」而正文只有 3 段、`### 1.` 重复），头部注明「另有 N 个回收站阶段未导出」。
+- **J-03（high）永久删除阶段后会话永久消失**：hard delete 遍历全部会话清 `phaseIds`，并清除 `hiddenBy` 指向该阶段的 `hidden/hiddenBy`；`syncSessions()` 额外自愈历史数据里悬空的 `hiddenBy`，会话回到项目与「未归属」并重新参与自动归纳。
+- **J-04（medium）一致性横幅常驻误报、一键修复恒 0 条**：检查与修复共用 `consistencyIssues()`（软删除阶段仍算「存在」），修复返回 `changed/remaining/noop`，面板据此提示「已修正 / 没有可自动修正的项 / 还剩 N 处」。
+- **J-05（medium）未归属会话迁移丢阶段**：会话不在任何 workspace 行时把「未归属」当作隐式来源项目，阶段随会话一起迁移，不再留下指向不存在阶段的悬空指针。
+- **J-06（medium）journal.json 损坏被静默清空**：解析失败（含顶层非对象）先把原文件另存为 `journal.json.corrupt-<时间戳>`，`journalLoadError()` 暴露给 `/api/state`、`/api/diagnostics` 与面板横幅，提示可从备份恢复。
+- **J-07（medium）错误面直接抛内部异常串 / config 无数值校验**：客户端新增「错误码 → 中文文案」映射并挂 `error.code`（`internal` 等不再原样显示，原始 detail 只进诊断）；`/api/config` 数值参数改为 `Number.isFinite` + 区间校验，越界或非数字保留原值并返回 `ignored`。
+- **J-08（low）删除分支静默丢弃空阶段**：分支内所有阶段统一软删除进回收站（有内容的阶段仍隐藏相关会话），不再有阶段「既看不见也恢复不了」。
+- **J-09（low）分支会话计数含隐藏会话**：`sessionCount` 过滤 `hidden`。
+- **J-10（low）旧备份恢复后结构滞后**：`/api/backup/restore` 在保存前执行 `migrateJournal()`，恢复 v1/v2 备份后立即是当前结构。
+- **J-11（low）`exports` 缺 `./package.json`**：补上映射，便于工具读取包元数据。
+- **J-14（info）幽灵项目不可见**：`/api/diagnostics` 增加 `projectsTotal` / `projectsVisible`。
+- **J-18（low）诊断看不到路由异常**：`/api/diagnostics` 增加 `routeErrors`（最近 5 条「路由异常」信标）。
+
+### 文档
+
+- **J-12** README 删除不存在的 `docs/images/*.png` 截图占位表，改为说明「本包不附带截图」及原因（`docs/` 不在 `files[]` 里）。
+- **J-13** 安装说明补充已发布包的 `plugin_manager action=install_bundle target="@pawsey0319/dsh-project-journal@0.2.1"`；并说明 `~/.dsh-plugins/dsh-project-journal` 只是 clone 暂存目录，真正安装位置在 `~/.dsh/profiles/<profile>/node_modules/@pawsey0319/dsh-project-journal`。
+- **J-15** 限制清单写明：自动归纳会改写阶段标题/摘要/下一步，只有 `manual: true` 的阶段不被覆盖。
+- **J-17** `act()` 调用点计数修正为 72（中英文 README 两处）。
+- 其余审查项（如 J-16 轮询去重）与完整复现步骤、验证记录见 `docs/research/journal-final-audit.md`。
+
+### 测试
+
+- `npm test` 18/18：新增 `test/routes.test.mjs` 8 条 Host 路由回归（临时 `HOME` + 手写夹具，不读写真实 `~/.dsh/project-journal`），并在存储层单测补充 `purgeTrash()` 与「损坏 journal 另存」两条。
+- `node --check index.js client.js journal-store.js` 全部通过。
+
 ## [0.2.0] - 2026-11-17
 
 首个公开发布版本：包名改为 `@pawsey0319/dsh-project-journal`，独立仓库发布（不再随 `@local/*` 内部包分发）。

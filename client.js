@@ -43,6 +43,53 @@ window.__ModuleLoader__.load({
       return basePromise
     }
 
+    // 服务端错误码 → 用户可读的中文。内部异常串（例如 "rmSync is not defined"）只留在
+    // error.detail / 诊断信标里，不再直接糊到用户脸上。
+    const ERROR_TEXT = {
+      'project-missing': '项目不存在或已被移除',
+      'phase-missing': '阶段不存在或已被删除',
+      'session-missing': '会话不存在或已归档',
+      'branch-missing': '分支不存在',
+      'branch-not-empty': '分支里还有带内容的阶段',
+      'branch-not-abandoned': '请先把分支标记为「已放弃」，再删除',
+      'branch-not-merged': '分支还没有合并，无法撤销',
+      'branch-limit': '分支数量已达上限',
+      'branch-empty': '分支里还没有阶段',
+      'branch-abandoned': '分支已放弃，先恢复为「进行中」再操作',
+      'cannot-delete-main': '主线不能删除',
+      'cannot-modify-main': '主线不能改名或改状态',
+      'cannot-merge-main': '主线不能合并',
+      'cannot-unmerge-main': '主线没有可撤销的合并',
+      'need-confirm': '这个操作需要二次确认',
+      'bad-request': '请求参数不完整或不合法',
+      'bad-action': '不支持的操作',
+      'unknown-action': '不支持的操作',
+      'bad-file': '文件名不合法',
+      'bad-path': '路径不合法',
+      'bad-cwd': '项目目录不可用',
+      'not-found': '目标不存在',
+      'missing': '备份文件不存在',
+      'unreadable': '文件无法读取',
+      'not-a-journal': '这个文件不是项目进展备份',
+      'write-failed': '写入失败，请检查磁盘权限',
+      'internal': '服务内部错误，详情已记录到诊断信标',
+      'target-missing': '目标项目或分支不存在',
+      'target-equal': '源和目标是同一个位置',
+      'cross-project': '会话不属于当前项目',
+      'workspace-controller-unavailable': '工作区服务不可用，请重启 DSH 后再试',
+      'session-controller-unavailable': '会话服务不可用，请重启 DSH 后再试',
+      'migration-unavailable': '当前没有可迁移的旧数据',
+      'prompt-failed': '读取会话内容失败',
+      'archive-failed': '归档会话失败',
+      'cancel-failed': '取消操作失败',
+      'already-there': '会话已经在该项目里',
+      'empty-statement': '问题描述不能为空',
+      'busy': '有任务正在运行，请稍后再试',
+      'revision-missing': '找不到这一版修订',
+      'record-missing': '记录不存在',
+      'project-path-missing': '项目目录不存在',
+    }
+
     async function api(path, params) {
       const route = await ensureBase()
       const query = new URLSearchParams()
@@ -53,7 +100,14 @@ window.__ModuleLoader__.load({
       const suffix = query.toString() === '' ? '' : `?${query.toString()}`
       const response = await fetch(`${route}${path}${suffix}`)
       const payload = await response.json().catch(() => ({}))
-      if (!response.ok) throw new Error(payload?.detail ?? payload?.error ?? `请求失败 ${response.status}`)
+      if (!response.ok) {
+        const code = typeof payload?.error === 'string' && payload.error !== '' ? payload.error : `http-${response.status}`
+        const message = ERROR_TEXT[code] ?? (typeof payload?.error === 'string' && payload.error !== '' ? `操作失败（${payload.error}）` : `请求失败（HTTP ${response.status}）`)
+        const error = new Error(message)
+        error.code = code
+        error.detail = payload?.detail ?? null
+        throw error
+      }
       return payload
     }
 
@@ -667,7 +721,10 @@ window.__ModuleLoader__.load({
       const save = async () => {
         setBusy(true)
         try {
-          await api('/api/config', { provider, model, auto: auto ? 1 : 0 })
+          const result = await api('/api/config', { provider, model, auto: auto ? 1 : 0 })
+          if (Array.isArray(result?.ignored) && result.ignored.length > 0) {
+            setState({ notice: `这些数值不合法，已保留原值：${result.ignored.join('、')}` })
+          }
           await refresh()
         } finally {
           setBusy(false)
@@ -1019,7 +1076,11 @@ window.__ModuleLoader__.load({
       const fix = async () => {
         try {
           const result = await api('/api/consistency/fix', { projectId: project.id })
-          setState({ notice: `已修正：阶段里移除 ${result.removedFromPhase} 条、会话里移除 ${result.removedFromRecord} 条残留指针` })
+          if (result.noop === true || (result.changed ?? 0) === 0) {
+            setState({ notice: result.remaining > 0 ? `没有可自动修正的项，还有 ${result.remaining} 处需要手工处理` : '没有需要修正的项' })
+          } else {
+            setState({ notice: `已修正：阶段里移除 ${result.removedFromPhase} 条、会话里移除 ${result.removedFromRecord} 条残留指针${result.remaining > 0 ? `；还剩 ${result.remaining} 处` : ''}` })
+          }
           await refresh()
         } catch (error) {
           setState({ error: String(error?.message ?? error) })
@@ -1202,13 +1263,12 @@ window.__ModuleLoader__.load({
             : `分支已删除` })
           await refresh()
         }
-        askConfirm(`删除分支「${branch.title}」？分支里的阶段会一起删除；阶段有内容时会先移进回收站（阶段链底部「已删除」可恢复），会话从项目里隐藏但对话历史不删。`, async () => {
+        askConfirm(`删除分支「${branch.title}」？分支里的阶段会一起移进回收站（不论有没有内容，阶段链底部「已删除」可恢复），有内容的阶段还会从项目视角隐藏相关会话，但对话历史不删。`, async () => {
           try {
             await remove(false)
           } catch (error) {
-            const message = String(error?.message ?? error)
-            if (!message.includes('branch-not-empty')) {
-              setState({ error: message })
+            if (error?.code !== 'branch-not-empty') {
+              setState({ error: String(error?.message ?? error) })
               return
             }
             askConfirm('这个分支里还有会话或总结。继续删除会把它们转进回收站（可在「已删除」里恢复），并从主线视角隐藏相关会话。确定继续？', async () => {
@@ -1806,6 +1866,9 @@ window.__ModuleLoader__.load({
             : null,
           store.notice ? h('div', { className: 'pj-notice' }, h('span', null, store.notice), h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('notice-dismiss', () => setState({ notice: null })) }, '知道了')) : null,
           store.error ? h('div', { className: 'pj-error' }, store.error) : null,
+          store.data?.journalError
+            ? h('div', { className: 'pj-error' }, `进展数据文件读取失败，原文件已另存为 ${store.data.journalError.file}（当前显示空数据）。可在「设置 → 从备份恢复」里选一份备份恢复。`)
+            : null,
           h(ConfirmModal),
           selected !== null ? h(AttachModal, { project: selected }) : null,
           selected !== null ? h(PhaseCreateModal, { project: selected }) : null,
