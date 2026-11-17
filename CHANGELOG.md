@@ -43,6 +43,12 @@
 - 面板入口与槽位稳定为：`shell.overlay`（面板）、`sidebar.footer.action`（按钮）、`sidebar.workspaces.session.row.action`（会话行「移入项目」）。
 - 写接口统一为 **GET + query**（DSH `webServer` prefix 路由只服务 `GET`/`HEAD`），文档见 README §6。
 
+### 文档
+
+- 修正重载说明：本插件由 bundle 自带 patch 插入，`plugin_manager action=set_plugin target="include:dsh-project-journal"` 会返回 `unaddressable`；改为 `action=set_bundle target="@pawsey0319/dsh-project-journal" enabled=false/true` 或直接重启 DSH。
+- 修正信标保留条数：内存环形 40 条、`/api/state` 返回末 12 条、诊断接口末 8 条，不落盘。
+- 修正 pnpm 用法：DSH 用 corepack 管理 pnpm，命令写作 `corepack pnpm install`。
+
 ## [0.1.0] - 2026-11-16
 
 首个可用版本（R9「项目进展阶段链与会话迁移」）。

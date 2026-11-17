@@ -66,7 +66,7 @@ DSH 的会话是按工作目录组织的，但真实工作往往跨目录：调�
 ### 方式 A：插件管理器安装（推荐）
 
 ```text
-plugin_manager install_bundle target="/绝对路径/dsh-project-journal"
+plugin_manager action=install_bundle target="/绝对路径/dsh-project-journal"
 # 返回 application:"applied" 才算真正生效；不是 applied 时按其 nextStep 处理
 ```
 
@@ -93,8 +93,10 @@ GUI 的 Plugins 页等价。插件包自带 bundle 配置补丁（`cordis.patch.
 ```
 
 ```bash
-cd ~/.dsh/profiles/desktop && pnpm install   # 或 pnpm add link:/绝对路径/dsh-project-journal
+cd ~/.dsh/profiles/desktop && corepack pnpm install   # 也可 corepack pnpm add link:/绝对路径/dsh-project-journal
 ```
+
+> DSH 用 corepack 管理 pnpm，PATH 里通常没有裸 `pnpm`（本机 `corepack pnpm --version` → 12.21.0）；照抄命令请带 `corepack` 前缀，或改用 `npx pnpm`。
 
 进 `bundles` 后插件自带的 patch 会自行 `insert` 自己的条目（`id: dsh-project-journal`），一般**不需要**手写 patch 层；要显式指定时：
 
@@ -129,7 +131,7 @@ curl -s "$B/x-journal/api/state" | head -c 400  # 期望有 projects[] 与 beaco
 ### 卸载
 
 ```text
-plugin_manager remove_bundle target="@pawsey0319/dsh-project-journal"
+plugin_manager action=remove_bundle target="@pawsey0319/dsh-project-journal"
 ```
 
 卸载后 `/x-journal/*` 路由消失、面板入口消失，**`~/.dsh/project-journal/journal.json` 保留**（不删用户历史）；想彻底清空请手动删除该目录。
@@ -252,10 +254,10 @@ curl -s "$B/x-journal/api/backfill?action=reset"   # 游标重置为 -1 并重�
 
 ## 限制与已知问题
 
-1. **首次安装/改元数据要刷新窗口**：改 `client.js` 可由 HMR 热替换，但改 `package.json`、`cordis.patch.yml`、`index.js` 后必须 disable → enable（或重启 DSH），页面也可能需要刷新才加载新产物。
+1. **首次安装/改元数据要刷新窗口**：改 `client.js` 可由 HMR 热替换；改 `package.json`、`cordis.patch.yml`、`index.js` 后需**重启 DSH**，或用 `plugin_manager action=set_bundle target="@pawsey0319/dsh-project-journal" enabled=false` → `true` 关开该 bundle（`set_plugin` 对本插件不可用，原因见「开发与测试」）。页面也可能需要刷新才加载新产物。
 2. **「古法编程」覆盖层提示**：客户端用 DOM 探测古法覆盖层是否在（`.gufa-overlay-root` 存在即视为开启），命中时面板 portal 到 `body` 下自建的 `#pj-overlay-host` 并置顶，打开时给一条非侵入提示 `.pj-notice`（`gufaUnderlay`），面板内点击由本插件处理；期间还有 1.2s 一次的 portal 宿主守护（面板数据另有 5s 轮询），宿主被移出 `body` 会立刻纠正回来。**但**关掉面板后露出的是古法 IDE——那是古法自身的持久化状态，插件不跨插件调用 `window.__GUFA_CODE__`，无法单方面关闭；要「关面板同时退出古法」需产品拍板。
 3. **不跨插件重置**：插件只改「会话归属」和自建的 `journal.json`，不重置任何其它插件状态、不代发消息、不调用审批；反过来，别人删了 workspace 或会话，本插件要等下一轮对账才反映。
-4. **诊断看信标**：每个点击动作经 `act()` 包装产出 `ui:<动作>` 信标（`beacons` 只留最近 12 条、不落盘）；排查「点了没反应」先看信标是否到达。非点击动作（自动归纳、迁移、回填）只有摘要级信标。
+4. **诊断看信标**：每个点击动作经 `act()` 包装产出 `ui:<动作>` 信标（`beacons` 在内存环形里保留最近 40 条，`/api/state` 只返回末 12 条、诊断接口末 8 条，均不落盘）；排查「点了没反应」先看信标是否到达。非点击动作（自动归纳、迁移、回填）只有摘要级信标。
 5. **`window.prompt` 在 DSH 渲染层是空操作**，所以所有需要输入的交互都是内嵌 input/textarea，不存在系统弹窗。
 6. **面板文案目前仅中文**；`locale/zh.json` / `locale/en.json` 只覆盖插件名与描述（随 DSH 界面语言切换）。
 7. **分支不是代码回滚**：只分「对话起点 + 进展链」，工作目录文件一行不动；需要 git 级回滚请自行操作。
@@ -279,7 +281,18 @@ curl -s $B/x-journal/api/health
 curl -s "$B/x-journal/api/state" | python3 -m json.tool | head -60
 ```
 
-宿主半改动：`plugin_manager set_plugin target="include:dsh-project-journal" enabled=false` → 再 `enabled=true`；客户端半保存即 HMR。浏览器控制台可用 `window.__pjDebug = { open(), close(), store }`。
+Host 半（`index.js` / `cordis.patch.yml` / `package.json`）改动后：**推荐直接重启 DSH**；不想重启时用 bundle 级开关：
+
+```text
+plugin_manager action=set_bundle target="@pawsey0319/dsh-project-journal" enabled=false
+plugin_manager action=set_bundle target="@pawsey0319/dsh-project-journal" enabled=true
+```
+
+- 本插件是 bundle 自带 `cordis.patch.yml` 插入的条目，profile patch 里没有同名 row，所以 `plugin_manager action=set_plugin target="include:dsh-project-journal"` 会返回 `readOnlyReason="unaddressable"`（改名后依旧不可用），不要照抄这种写法；
+- remap 之前 bundle 名仍是 `@local/dsh-project-journal`，上面的 `target` 要跟着换；
+- 只改 `client.js` 时保存即 HMR，无需重启。
+
+浏览器控制台可用 `window.__pjDebug = { open(), close(), store }`。
 
 ## 兼容性
 
