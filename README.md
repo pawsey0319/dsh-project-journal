@@ -5,7 +5,7 @@
 把 DeepSeek Harness（DSH）里散落在各个会话中的「项目进展」整理成一条可回看的阶段链：每个项目一份进展记录，包含阶段、下一步和问题档案，并支持把会话一键迁回它真正所属的项目。
 
 - npm 包名：`@pawsey0319/dsh-project-journal`
-- 当前版本：`0.2.2`（见 [CHANGELOG.md](CHANGELOG.md)）
+- 当前版本：`0.2.3`（见 [CHANGELOG.md](CHANGELOG.md)）
 - 许可证：[MIT](LICENSE) © 2026 pawsey0319
 - 宿主：DSH（`manifestVersion: 1`，需要 Web 客户端与 `slots` 服务）
 
@@ -338,7 +338,7 @@ dsh-project-journal/
 
 Project Journal keeps a durable, per-project chain of phases, next steps and problem records for every DSH session, and can migrate a session back to the project it really belongs to.
 
-- Package: `@pawsey0319/dsh-project-journal` (v0.2.2, MIT; not published to npm yet — publishing requires 2FA)
+- Package: `@pawsey0319/dsh-project-journal` (v0.2.3, MIT; not published to npm yet — publishing requires 2FA)
 - Install it from the DSH Plugin Manager using the local checkout path (npm is not published yet) and enable the bundle; it registers a sidebar entry, a per-session move button and a full-screen overlay panel. Local development can link the repo into `~/.dsh/profiles/<profile>/package.json` and add it to `dsh.profile.bundles`.
 - Action clicks go through a single `act()` helper (72 call sites) that emits a `ui:<action>` beacon and routes failures to the panel error bar instead of throwing into the host.
 - Data stays in `~/.dsh/project-journal/journal.json`; summaries are produced by the model configured in DSH, and the model never receives file contents or images.

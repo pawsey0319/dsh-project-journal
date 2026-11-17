@@ -3,11 +3,17 @@
 本插件的所有重要变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-## [未发布]
+## [0.2.3] - 2026-11-17
+
+把 0.2.2 之后的 corrupt-journal 横幅维修（F-04/F-05）正式发版，并补上客户端「知道了」按钮（F-06）——此前 CHANGELOG 已描述该交互，但 `client.js` 与 v0.2.2 完全相同、并没有按钮，属文档先行的失实，本次补齐。
 
 ### 修复
 
 - **J-06 后续**：`journal-store.js` 保留导出 `clearJournalLoadError()`，但 `saveJournal()` 不再把它当恢复信号（此前按「写回含真实内容」清除，仍会把自动归纳、reconcile 空壳写回误判为恢复）。现在只有显式路径清警告：① `index.js` 的 `restoreBackup()` 成功 `saveJournal(state)` 后清空底层 loadError——恢复一份**合法但 0 阶段**的备份同样清零，因为坏文件已被覆盖，这条是持久的；② 新增 `GET /api/journal/dismiss-error?confirm=1`：把「用户点了知道了」记为**会话内**状态（内存里的 `loadErrorDismissedAt`，不落盘、不用 localStorage），`/api/state` 与 `/api/diagnostics` 的 `journalError` 在已 dismiss 时返回 `null`，但底层 `.corrupt-*` 文件、日志与 loadError 原样保留；下次启动重新 load 出错误时（新的 `.at`）会重新告警。单测覆盖「自动归纳式写回不清 + 显式 clear 才清」，另用临时 HOME 端到端验证损坏启动 → dismiss → 恢复 0 阶段备份的完整链路。
+
+### 新增
+
+- **F-06 横幅补「知道了」按钮**：`client.js` 的 `journalError` 横幅现在渲染「知道了」按钮，`onClick` 走 `act('dismiss-error', …)` → `GET /api/journal/dismiss-error?confirm=1` → 成功后 `refresh()`；请求失败落入面板错误条（`操作失败：…`）。语义与服务端一致：只清会话内的面板视图，`.corrupt-*` 文件、日志和底层 loadError 保留，重启后仍会告警。
 
 ### 文档
 
