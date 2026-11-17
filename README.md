@@ -125,7 +125,7 @@ cd ~/.dsh-plugins/dsh-project-journal && npm test    # 可选：先跑单测
 
 然后按方式 A 或 B 安装 `~/.dsh-plugins/dsh-project-journal`。
 
-> 注意：`~/.dsh-plugins/dsh-project-journal` 只是 clone 出来的**暂存源码目录**，不是插件管理器实际安装的位置。装好之后，真正的插件在 `~/.dsh/profiles/<profile>/node_modules/@pawsey0319/dsh-project-journal`。那个安装副本不是开发副本（没有 git 历史、没有开发依赖，也不适合迭代改动），跑测试请在 clone 目录执行。
+> 注意：`~/.dsh-plugins/dsh-project-journal` 只是 clone 出来的**暂存源码目录**，不是插件管理器实际安装的位置。装好之后，面板用的插件在 `~/.dsh/profiles/<profile>/node_modules/@pawsey0319/dsh-project-journal`：按**方式 A**（本地路径 `install_bundle`）装出来的是拷贝副本，不是开发副本（没有 git 历史，不适合就地迭代改动）；**方式 B** 的 `link:` 直接指向 clone 目录，装出来的和 clone 是同一份。两种安装都没有开发依赖，测试都请在 clone 目录跑。
 
 更新：`git pull` 后 **disable → enable**（Host 半代码改动必须走这一步；只改 `client.js` 时 HMR 会自动热替换）。
 

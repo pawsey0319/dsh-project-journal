@@ -25,6 +25,7 @@ import {
   branchPhases,
   backupJournal,
   buildDigest,
+  clearJournalLoadError,
   contentText,
   dirBytes,
   ensureProject,
@@ -147,6 +148,11 @@ function parseModelJson(text) {
 
 export function apply(ctx) {
   const state = loadJournal()
+  // Session-scoped acknowledgement for the corrupt-journal banner: the panel can
+  // hide it without touching disk, while the .corrupt-* file and log stay put.
+  // The flag stores WHICH error was acknowledged, so a fresh loadJournal()
+  // failure (new .at) re-arms the warning instead of being silently hidden.
+  let loadErrorDismissedAt = null
   const beacons = []
   const queue = []
   const queued = new Set()
@@ -1296,6 +1302,10 @@ async function resolvePhaseSource(project, phase) {
     // 旧版备份（v1/v2）恢复后立即迁移，别让磁盘上留着一份旧结构直到下次保存或重启。
     migrateJournal(state)
     saveJournal(state)
+    // The restored journal is healthy again (even when the backup has zero
+    // phases), so drop the stale corrupt-file banner state explicitly.
+    clearJournalLoadError()
+    loadErrorDismissedAt = null
     reconcile()
     return { ok: true, file: name, projects: Object.keys(state.projects).length, sessions: Object.keys(state.sessions).length }
   }
@@ -1445,6 +1455,12 @@ async function resolvePhaseSource(project, phase) {
     return issues
   }
 
+  function journalErrorForPanel() {
+    const error = journalLoadError()
+    if (error === null) return null
+    return loadErrorDismissedAt !== null && loadErrorDismissedAt === error.at ? null : error
+  }
+
   function buildState() {
     const { list, snap } = visibleProjects()
     const byPath = new Map()
@@ -1533,7 +1549,7 @@ async function resolvePhaseSource(project, phase) {
         .filter((record) => record.state === 'summarizing')
         .map((record) => record.sessionId),
       beacons: beacons.slice(-12),
-      journalError: journalLoadError(),
+      journalError: journalErrorForPanel(),
     }
   }
 
@@ -1612,7 +1628,7 @@ async function resolvePhaseSource(project, phase) {
             sessionStates: stats,
             failures,
             routeErrors,
-            journalError: journalLoadError(),
+            journalError: journalErrorForPanel(),
             queue: queue.length,
             timers: timers.size,
             workerRunning,
@@ -1898,6 +1914,12 @@ async function resolvePhaseSource(project, phase) {
         if (pathname.endsWith('/api/backup/restore')) {
           const result = restoreBackup(q.get('file'))
           return json(result, result.error === undefined ? 200 : 400)
+        }
+        if (pathname.endsWith('/api/journal/dismiss-error')) {
+          if (q.get('confirm') !== '1') return json({ error: 'need-confirm' }, 400)
+          loadErrorDismissedAt = journalLoadError()?.at ?? null
+          note('已忽略数据文件读取告警（会话内）')
+          return json({ ok: true, journalError: journalErrorForPanel() })
         }
         if (pathname.endsWith('/api/backup')) {
           if (q.get('action') !== 'create') return json({ error: 'bad-action' }, 400)

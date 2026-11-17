@@ -7,11 +7,11 @@
 
 ### 修复
 
-- **J-06 后续**：`journal-store.js` 新增导出 `clearJournalLoadError()`，并在 `saveJournal()` 写回**含真实内容**的数据（至少一个阶段）后清空 loadError。此前 journal.json 损坏后即使「从备份恢复」成功，面板顶部「读取失败，原文件已另存为…」横幅仍会常驻到下次重启；现在恢复出一份有数据的 journal 后，`/api/state` 的 `journalError` 即归 `null`、横幅消失。损坏后启动路径写回的空壳（项目壳子、没有阶段）**不会**清除警告，避免横幅在用户看到之前就被启动流程抹掉。新增单测覆盖「损坏 → 空壳写回不清除 → 恢复含阶段数据后清零」以及显式 `clearJournalLoadError()`。
+- **J-06 后续**：`journal-store.js` 保留导出 `clearJournalLoadError()`，但 `saveJournal()` 不再把它当恢复信号（此前按「写回含真实内容」清除，仍会把自动归纳、reconcile 空壳写回误判为恢复）。现在只有显式路径清警告：① `index.js` 的 `restoreBackup()` 成功 `saveJournal(state)` 后清空底层 loadError——恢复一份**合法但 0 阶段**的备份同样清零，因为坏文件已被覆盖，这条是持久的；② 新增 `GET /api/journal/dismiss-error?confirm=1`：把「用户点了知道了」记为**会话内**状态（内存里的 `loadErrorDismissedAt`，不落盘、不用 localStorage），`/api/state` 与 `/api/diagnostics` 的 `journalError` 在已 dismiss 时返回 `null`，但底层 `.corrupt-*` 文件、日志与 loadError 原样保留；下次启动重新 load 出错误时（新的 `.at`）会重新告警。单测覆盖「自动归纳式写回不清 + 显式 clear 才清」，另用临时 HOME 端到端验证损坏启动 → dismiss → 恢复 0 阶段备份的完整链路。
 
 ### 文档
 
-- README 安装说明中「那里没有 `test/`」的失实理由改为：安装副本不是开发副本（无 git 历史、无开发依赖、不适合迭代），测试请在 clone 目录跑（`files[]` 含 `test/*`，安装副本确实带测试）。
+- README 安装说明中「那里没有 `test/`」的失实理由改为限定表述：按**方式 A**（本地路径 `install_bundle`）装出来的是拷贝副本、不是开发副本（没有 git 历史），**方式 B** 的 `link:` 直接指向 clone、二者是同一份；两种安装都没有开发依赖，测试请在 clone 目录跑（`files[]` 含 `test/*`，安装副本确实带测试）。
 - CHANGELOG 中 J-13 条目改为与 0.2.2 README 一致：补充本地路径 / `link:` 安装说明；包未上架 npm 前按版本号 `install_bundle` 会 404。
 
 ## [0.2.2] - 2026-11-17

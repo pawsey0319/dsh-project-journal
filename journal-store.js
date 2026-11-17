@@ -153,17 +153,10 @@ export function saveJournal(state) {
   const tmp = `${FILE}.tmp`
   writeFileSync(tmp, JSON.stringify(state, null, 2))
   renameSync(tmp, FILE)
-  // A successful write means the journal on disk is healthy again (for example
-  // after restoring a backup); drop the stale corrupt-file banner state. The
-  // exception is the empty shell the boot path persists right after a bad load:
-  // clearing there would hide the warning before the user ever sees it, so only
-  // a write that carries real content (at least one phase) resets the banner.
-  if (loadError !== null) {
-    const hasContent = Object.values(state.projects ?? {}).some(
-      (project) => Array.isArray(project?.phases) && project.phases.length > 0,
-    )
-    if (hasContent) clearJournalLoadError()
-  }
+  // A successful write alone does not clear the corrupt-file banner: the boot
+  // path persists an empty recovery state right after a bad load, and clearing
+  // there would hide the warning before the user sees it. Only an explicit
+  // clearJournalLoadError() (e.g. after restoring a backup) resets it.
 }
 
 /** One file copy per call, keeping the newest MAX_BACKUPS snapshots. */

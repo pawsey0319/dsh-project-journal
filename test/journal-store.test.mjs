@@ -150,29 +150,32 @@ test('journal.json 损坏时另存为 .corrupt-* 并暴露错误，不静默清�
   assert.equal(existsSync(error.file), true)
 })
 
-test('恢复备份写回 journal.json 后清除 corrupt 横幅状态（journalLoadError 归 null）', () => {
+test('自动归纳式 saveJournal 写回不清 corrupt 横幅，只有显式 clear 才清', () => {
   // 先制造一次损坏读取，让 loadError 处于已置位状态。
   store.saveJournal(store.emptyJournal())
   writeFileSync(store.FILE, '{ broken again')
   store.loadJournal()
   assert.ok(store.journalLoadError() !== null, '损坏读取后应有错误状态')
 
-  // 损坏后启动路径只会写回空壳（项目在、阶段全空）；这种写回不能清掉警告，
+  // 自动归纳 / reconcile 空壳写回走的是通用 saveJournal，不能顺手清横幅，
   // 否则用户在面板上永远看不到「原文件已另存为」的提示。
   const shell = store.emptyJournal()
-  store.ensureProject(shell, { id: 'p9', title: '恢复的项目', path: '/tmp/pj-restore' }, 0)
+  store.ensureProject(shell, { id: 'p9', title: '自动归纳后的项目', path: '/tmp/pj-restore' }, 0)
   store.saveJournal(shell)
-  assert.ok(store.journalLoadError() !== null, '空壳写回不应清掉警告')
+  assert.ok(store.journalLoadError() !== null, '通用 saveJournal 写回不应清掉警告')
 
-  // 恢复真实备份（含阶段）后，横幅状态清零。
+  // 即便写回含阶段的数据也一样：只有显式 clear 才是恢复信号。
   const at = new Date().toISOString()
   shell.projects.p9.phases.push({
-    id: 'ph9', seq: 1, title: '恢复的阶段', summary: '', status: 'done', branchId: 'main',
+    id: 'ph9', seq: 1, title: '阶段', summary: '', status: 'done', branchId: 'main',
     sessions: [], problems: [], nextSteps: [], artifacts: [], createdAt: at, updatedAt: at,
   })
   store.saveJournal(shell)
+  assert.ok(store.journalLoadError() !== null, '含阶段的自动写回同样不应清掉警告')
 
-  assert.equal(store.journalLoadError(), null, '含真实数据的写回后横幅状态应清空')
+  // 显式清除（restoreBackup / dismiss 走的路径）。
+  store.clearJournalLoadError()
+  assert.equal(store.journalLoadError(), null)
   const reloaded = store.loadJournal()
   assert.equal(store.journalLoadError(), null, '重新加载健康文件不应再报错')
   assert.equal(reloaded.projects.p9.phases.length, 1)
