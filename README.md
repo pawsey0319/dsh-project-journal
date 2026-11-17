@@ -267,8 +267,10 @@ curl -s "$B/x-journal/api/backfill?action=reset"   # 游标重置为 -1 并重�
 
 ## 开发与测试
 
+下面所有命令都在**插件包根目录**执行（公开仓库 clone 后的 `dsh-project-journal/`；在 monorepo 里则是 `plugins/dsh-project-journal/`，不再是仓库根）：
+
 ```bash
-cd plugins/dsh-project-journal
+cd dsh-project-journal        # 已在插件包根目录时省略
 node --check index.js && node --check client.js && node --check journal-store.js
 npm test          # node --test test/*.test.mjs
 ```

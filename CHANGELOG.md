@@ -49,6 +49,7 @@
 - 修正信标保留条数：内存环形 40 条、`/api/state` 返回末 12 条、诊断接口末 8 条，不落盘。
 - 修正 pnpm 用法：DSH 用 corepack 管理 pnpm，命令写作 `corepack pnpm install`。
 - 修正 README §5「数据与隐私」的信标口径（原写「最近 12 条」）：与限制 #4 统一为内存环形最多 40 条、`/api/state` 返回末 12 条、诊断接口返回末 8 条，均不落盘。
+- 修正「开发与测试」的快速开始路径：原 `cd plugins/dsh-project-journal` 是 monorepo 视角，公开仓库根目录即插件包根，改为「在插件包根目录执行」（clone 后为 `cd dsh-project-journal`）。
 
 ## [0.1.0] - 2026-11-16
 
