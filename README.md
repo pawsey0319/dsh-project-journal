@@ -188,7 +188,7 @@ curl -s "$B/x-journal/api/backfill?action=reset"   # 游标重置为 -1 并重�
 
 - 进展数据保存在本机 `~/.dsh/project-journal/journal.json`（version 3，原子写 + 滚动备份），不上传第三方；
 - 归纳时只把「游标之后的新增会话文本 + 已有阶段摘要」发给**你自己配置的**模型 provider；模型输入**不含文件内容、不含图片**；
-- 插件无遥测：`/api/beacon` 只是本机内存里的环形诊断缓冲（最近 12 条），不落盘、不外发；
+- 插件无遥测：`/api/beacon` 只写本机内存里的环形诊断缓冲（最多保留 40 条；`/api/state` 返回末 12 条、诊断接口返回末 8 条），不落盘、不外发；
 - 迁移会话只改 DSH 的 workspace 归属（经 `storageDomain` 的 `workspaces` 表），不移动磁盘上的项目文件；
 - 删除阶段/问题先进回收站或保留修订历史，迁移/删除/撤销合并前自动备份：
 

@@ -48,6 +48,7 @@
 - 修正重载说明：本插件由 bundle 自带 patch 插入，`plugin_manager action=set_plugin target="include:dsh-project-journal"` 会返回 `unaddressable`；改为 `action=set_bundle target="@pawsey0319/dsh-project-journal" enabled=false/true` 或直接重启 DSH。
 - 修正信标保留条数：内存环形 40 条、`/api/state` 返回末 12 条、诊断接口末 8 条，不落盘。
 - 修正 pnpm 用法：DSH 用 corepack 管理 pnpm，命令写作 `corepack pnpm install`。
+- 修正 README §5「数据与隐私」的信标口径（原写「最近 12 条」）：与限制 #4 统一为内存环形最多 40 条、`/api/state` 返回末 12 条、诊断接口返回末 8 条，均不落盘。
 
 ## [0.1.0] - 2026-11-16
 
