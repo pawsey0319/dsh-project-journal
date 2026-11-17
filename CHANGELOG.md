@@ -3,6 +3,17 @@
 本插件的所有重要变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [未发布]
+
+### 修复
+
+- **J-06 后续**：`journal-store.js` 新增导出 `clearJournalLoadError()`，并在 `saveJournal()` 写回**含真实内容**的数据（至少一个阶段）后清空 loadError。此前 journal.json 损坏后即使「从备份恢复」成功，面板顶部「读取失败，原文件已另存为…」横幅仍会常驻到下次重启；现在恢复出一份有数据的 journal 后，`/api/state` 的 `journalError` 即归 `null`、横幅消失。损坏后启动路径写回的空壳（项目壳子、没有阶段）**不会**清除警告，避免横幅在用户看到之前就被启动流程抹掉。新增单测覆盖「损坏 → 空壳写回不清除 → 恢复含阶段数据后清零」以及显式 `clearJournalLoadError()`。
+
+### 文档
+
+- README 安装说明中「那里没有 `test/`」的失实理由改为：安装副本不是开发副本（无 git 历史、无开发依赖、不适合迭代），测试请在 clone 目录跑（`files[]` 含 `test/*`，安装副本确实带测试）。
+- CHANGELOG 中 J-13 条目改为与 0.2.2 README 一致：补充本地路径 / `link:` 安装说明；包未上架 npm 前按版本号 `install_bundle` 会 404。
+
 ## [0.2.2] - 2026-11-17
 
 docs only：更正 npm 上架状态说明（`npm publish` 需要 2FA，当前未上架任何版本），无代码变更。
@@ -34,7 +45,7 @@ docs only：更正 npm 上架状态说明（`npm publish` 需要 2FA，当前未
 ### 文档
 
 - **J-12** README 删除不存在的 `docs/images/*.png` 截图占位表，改为说明「本包不附带截图」及原因（`docs/` 不在 `files[]` 里）。
-- **J-13** 安装说明补充已发布包的 `plugin_manager action=install_bundle target="@pawsey0319/dsh-project-journal@0.2.1"`；并说明 `~/.dsh-plugins/dsh-project-journal` 只是 clone 暂存目录，真正安装位置在 `~/.dsh/profiles/<profile>/node_modules/@pawsey0319/dsh-project-journal`。
+- **J-13** 安装说明补充本地路径 / `link:` 安装方式；包未上架 npm 前按版本号 `install_bundle` 会 404，0.2.2 已从 README 移除该命令。
 - **J-15** 限制清单写明：自动归纳会改写阶段标题/摘要/下一步，只有 `manual: true` 的阶段不被覆盖。
 - **J-17** `act()` 调用点计数修正为 72（中英文 README 两处）。
 - 其余审查项（如 J-16 轮询去重）与完整复现步骤、验证记录见 `docs/research/journal-final-audit.md`。

@@ -149,3 +149,40 @@ test('journal.json 损坏时另存为 .corrupt-* 并暴露错误，不静默清�
   assert.match(error.file, /\.corrupt-/)
   assert.equal(existsSync(error.file), true)
 })
+
+test('恢复备份写回 journal.json 后清除 corrupt 横幅状态（journalLoadError 归 null）', () => {
+  // 先制造一次损坏读取，让 loadError 处于已置位状态。
+  store.saveJournal(store.emptyJournal())
+  writeFileSync(store.FILE, '{ broken again')
+  store.loadJournal()
+  assert.ok(store.journalLoadError() !== null, '损坏读取后应有错误状态')
+
+  // 损坏后启动路径只会写回空壳（项目在、阶段全空）；这种写回不能清掉警告，
+  // 否则用户在面板上永远看不到「原文件已另存为」的提示。
+  const shell = store.emptyJournal()
+  store.ensureProject(shell, { id: 'p9', title: '恢复的项目', path: '/tmp/pj-restore' }, 0)
+  store.saveJournal(shell)
+  assert.ok(store.journalLoadError() !== null, '空壳写回不应清掉警告')
+
+  // 恢复真实备份（含阶段）后，横幅状态清零。
+  const at = new Date().toISOString()
+  shell.projects.p9.phases.push({
+    id: 'ph9', seq: 1, title: '恢复的阶段', summary: '', status: 'done', branchId: 'main',
+    sessions: [], problems: [], nextSteps: [], artifacts: [], createdAt: at, updatedAt: at,
+  })
+  store.saveJournal(shell)
+
+  assert.equal(store.journalLoadError(), null, '含真实数据的写回后横幅状态应清空')
+  const reloaded = store.loadJournal()
+  assert.equal(store.journalLoadError(), null, '重新加载健康文件不应再报错')
+  assert.equal(reloaded.projects.p9.phases.length, 1)
+})
+
+test('clearJournalLoadError 可显式清除 corrupt 横幅状态', () => {
+  store.saveJournal(store.emptyJournal())
+  writeFileSync(store.FILE, '{ broken once more')
+  store.loadJournal()
+  assert.ok(store.journalLoadError() !== null)
+  store.clearJournalLoadError()
+  assert.equal(store.journalLoadError(), null)
+})

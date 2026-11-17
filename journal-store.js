@@ -30,6 +30,14 @@ export function journalLoadError() {
   return loadError
 }
 
+/**
+ * Clear the remembered load failure after the journal has been written back in
+ * a known-good shape (a successful restore), so the panel banner disappears.
+ */
+export function clearJournalLoadError() {
+  loadError = null
+}
+
 /** Total bytes / file count below a directory tree (missing dirs count as zero). */
 export function dirBytes(root) {
   let total = 0
@@ -145,6 +153,17 @@ export function saveJournal(state) {
   const tmp = `${FILE}.tmp`
   writeFileSync(tmp, JSON.stringify(state, null, 2))
   renameSync(tmp, FILE)
+  // A successful write means the journal on disk is healthy again (for example
+  // after restoring a backup); drop the stale corrupt-file banner state. The
+  // exception is the empty shell the boot path persists right after a bad load:
+  // clearing there would hide the warning before the user ever sees it, so only
+  // a write that carries real content (at least one phase) resets the banner.
+  if (loadError !== null) {
+    const hasContent = Object.values(state.projects ?? {}).some(
+      (project) => Array.isArray(project?.phases) && project.phases.length > 0,
+    )
+    if (hasContent) clearJournalLoadError()
+  }
 }
 
 /** One file copy per call, keeping the newest MAX_BACKUPS snapshots. */
