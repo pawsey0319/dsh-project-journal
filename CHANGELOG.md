@@ -3,6 +3,23 @@
 本插件的所有重要变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.2.4] - 2026-11-18
+
+修复 F-08：v0.2.3 的「重启后仍会告警」并不成立——损坏启动时 `.corrupt-*` 确实写了，但宿主紧接着把空壳写回 `journal.json`；下次启动文件可解析，`loadError` 归零，横幅消失、阶段静默丢失。J-06 的「不静默清空」此前只覆盖单次会话。
+
+### 修复
+
+- **F-08 损坏后重启仍提示**：`loadJournal()` 启动时扫描 `DIR` 下的 `journal.json.corrupt-*`（只读文件名/大小/mtime，不读内容），只要存在未被恢复记录覆盖的条目，就重新置 `journalLoadError({ original, file, at, reason: 'corrupt-backup-present' })`，`/api/state` 横幅随重启恢复。判定不看 `journal.json` 的 mtime——它会被启动时的空壳写回刷新得比损坏文件更新，正是 F-08 的成因；改为与恢复记录比较。
+- **恢复记录**：`restoreBackup()` 成功后除 `clearJournalLoadError()` 外再写 `journal.last-restore.json`（`recordRestore()`）；此后 mtime 不晚于该记录的 `.corrupt-*` 视为已覆盖，重启不反弹；恢复之后的新损坏（mtime 更新）仍会提示。
+- **dismiss 语义不变**：`GET /api/journal/dismiss-error?confirm=1` 仍只在会话内按 `journalError.at` 隐藏，不落盘；重启后重新提示，直到恢复或再次忽略。
+- **诊断可见**：`/api/diagnostics` 新增 `corruptFiles: [{ path, bytes, at }]`，面板横幅之外的排查入口。
+- **文案如实**：`client.js` 横幅改为「重启后仍会提示，直到用备份恢复或再次忽略」；README 限制第 12 条、CHANGELOG 同步。
+
+### 测试
+
+- `journal-store.test.mjs`：新增「残留 `.corrupt-*` 且未恢复 → 重新置错（`corrupt-backup-present`，含 original/bytes）」「恢复记录之后不反弹；比恢复记录更新的新损坏会再次提示」，并把「显式 clear 后重新加载」改成断言会重新置错（只有恢复记录才持久）。
+- `routes.test.mjs`：新增「残留 `.corrupt-*` 时启动即重新提示 + diagnostics `corruptFiles`」「dismiss 按 `.at` 会话内忽略、重复点无害」「从备份恢复后写恢复记录、清横幅且再次 load 不反弹」，共 25 条用例（14 store + 11 route）。
+
 ## [0.2.3] - 2026-11-17
 
 把 0.2.2 之后的 corrupt-journal 横幅维修（F-04/F-05）正式发版，并补上客户端「知道了」按钮（F-06）——此前 CHANGELOG 已描述该交互，但 `client.js` 与 v0.2.2 完全相同、并没有按钮，属文档先行的失实，本次补齐。

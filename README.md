@@ -5,7 +5,7 @@
 把 DeepSeek Harness（DSH）里散落在各个会话中的「项目进展」整理成一条可回看的阶段链：每个项目一份进展记录，包含阶段、下一步和问题档案，并支持把会话一键迁回它真正所属的项目。
 
 - npm 包名：`@pawsey0319/dsh-project-journal`
-- 当前版本：`0.2.3`（见 [CHANGELOG.md](CHANGELOG.md)）
+- 当前版本：`0.2.4`（见 [CHANGELOG.md](CHANGELOG.md)）
 - 许可证：[MIT](LICENSE) © 2026 pawsey0319
 - 宿主：DSH（`manifestVersion: 1`，需要 Web 客户端与 `slots` 服务）
 
@@ -279,6 +279,8 @@ curl -s "$B/x-journal/api/backfill?action=reset"   # 游标重置为 -1 并重�
 10. **阶段是派生视图**：手改会进入后续归纳与开分支的上下文（`phaseContext` / `branchContext` / 种子），从而影响后续模型判断；修订记录就是为了让这件事可追溯。
 11. **自动归纳会改写阶段标题/摘要/下一步**：同一阶段出现新进展时，模型会更新它（标题被重写是预期行为）；只有手改过的阶段（`manual: true`）才固定不被覆盖。想保留某版就点开阶段改一次，或从修订记录回退。
 
+12. **journal.json 损坏后重启仍会提示**：解析失败时原文件先另存为 `journal.json.corrupt-<时间戳>`，面板横幅与 `/api/diagnostics.corruptFiles` 会一直提示，直到你从备份恢复（写恢复记录，较早的 `.corrupt-*` 不再提示）或在本次会话点「知道了」（仅隐藏当前会话，重启后仍提示，直到恢复）。`.corrupt-*` 文件不会被自动删除，确认数据已恢复后可手动清理。
+
 ## 开发与测试
 
 下面所有命令都在**插件包根目录**执行（公开仓库 clone 后的 `dsh-project-journal/`；在 monorepo 里则是 `plugins/dsh-project-journal/`，不再是仓库根）：
@@ -289,7 +291,7 @@ node --check index.js && node --check client.js && node --check journal-store.js
 npm test          # node --test test/*.test.mjs
 ```
 
-测试覆盖 `journal-store.js` 的摘要归并、问题 quote 校验、阶段状态迁移、分支上下文与 journal 迁移等纯逻辑（无需 DSH 在跑），以及 `index.js` 前缀路由的回归用例（回收站清空、导出过滤软删阶段、一致性检查/修复同口径、永久删除解隐藏、未归属会话迁移、config 数值校验）。路由用例用临时 `HOME` + 手写 journal 夹具，不读写真实 `~/.dsh/project-journal`。装载回归需要真实 DSH：
+测试覆盖 `journal-store.js` 的摘要归并、问题 quote 校验、阶段状态迁移、分支上下文与 journal 迁移等纯逻辑（无需 DSH 在跑），以及 `index.js` 前缀路由的回归用例（回收站清空、导出过滤软删阶段、一致性检查/修复同口径、永久删除解隐藏、未归属会话迁移、config 数值校验、损坏另存的启动重提示 / dismiss / 恢复不反弹）。路由用例用临时 `HOME` + 手写 journal 夹具，不读写真实 `~/.dsh/project-journal`。装载回归需要真实 DSH：
 
 ```bash
 B=http://127.0.0.1:<GUI 端口>
@@ -338,7 +340,7 @@ dsh-project-journal/
 
 Project Journal keeps a durable, per-project chain of phases, next steps and problem records for every DSH session, and can migrate a session back to the project it really belongs to.
 
-- Package: `@pawsey0319/dsh-project-journal` (v0.2.3, MIT; not published to npm yet — publishing requires 2FA)
+- Package: `@pawsey0319/dsh-project-journal` (v0.2.4, MIT; not published to npm yet — publishing requires 2FA)
 - Install it from the DSH Plugin Manager using the local checkout path (npm is not published yet) and enable the bundle; it registers a sidebar entry, a per-session move button and a full-screen overlay panel. Local development can link the repo into `~/.dsh/profiles/<profile>/package.json` and add it to `dsh.profile.bundles`.
 - Action clicks go through a single `act()` helper (72 call sites) that emits a `ui:<action>` beacon and routes failures to the panel error bar instead of throwing into the host.
 - Data stays in `~/.dsh/project-journal/journal.json`; summaries are produced by the model configured in DSH, and the model never receives file contents or images.

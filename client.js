@@ -1870,13 +1870,13 @@ window.__ModuleLoader__.load({
             ? h(
                 'div',
                 { className: 'pj-error' },
-                `进展数据文件读取失败，原文件已另存为 ${store.data.journalError.file}（当前显示空数据）。可在「设置 → 从备份恢复」里选一份备份恢复。`,
+                `进展数据文件读取失败，原文件已另存为 ${store.data.journalError.file}（当前显示空数据）。重启后仍会提示，直到用备份恢复或再次忽略；可在「设置 → 从备份恢复」里选一份备份恢复。`,
                 h(
                   'button',
                   {
                     className: 'pj-btn ghost',
                     type: 'button',
-                    // 会话内隐藏：服务端只丢内存标记，.corrupt-* 文件与日志保留，重启后仍会告警。
+                    // 会话内隐藏：服务端只丢内存标记，.corrupt-* 文件与日志保留；重启后仍会提示，直到用备份恢复。
                     onClick: act('dismiss-error', async () => {
                       await api('/api/journal/dismiss-error?confirm=1')
                       await refresh()

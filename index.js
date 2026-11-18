@@ -27,6 +27,7 @@ import {
   buildDigest,
   clearJournalLoadError,
   contentText,
+  corruptBackups,
   dirBytes,
   ensureProject,
   journalLoadError,
@@ -36,6 +37,7 @@ import {
   phaseBrief,
   phaseContext,
   purgeTrash,
+  recordRestore,
   resequence,
   saveJournal,
 } from './journal-store.js'
@@ -1306,6 +1308,8 @@ async function resolvePhaseSource(project, phase) {
     // phases), so drop the stale corrupt-file banner state explicitly.
     clearJournalLoadError()
     loadErrorDismissedAt = null
+    // 把这次恢复记到磁盘：比它更早的 .corrupt-* 视为已被覆盖，别在重启后又弹一次。
+    recordRestore()
     reconcile()
     return { ok: true, file: name, projects: Object.keys(state.projects).length, sessions: Object.keys(state.sessions).length }
   }
@@ -1628,6 +1632,7 @@ async function resolvePhaseSource(project, phase) {
             sessionStates: stats,
             failures,
             routeErrors,
+            corruptFiles: corruptBackups().map((entry) => ({ path: entry.path, bytes: entry.bytes, at: entry.at })),
             journalError: journalErrorForPanel(),
             queue: queue.length,
             timers: timers.size,

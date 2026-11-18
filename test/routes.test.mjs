@@ -70,6 +70,12 @@ writeFileSync(join(STORAGE, 'workspace.json'), JSON.stringify({ tables: { worksp
 mkdirSync(join(DIR, 'trash', 'p1'), { recursive: true })
 writeFileSync(join(DIR, 'journal.json'), JSON.stringify(journal, null, 2))
 writeFileSync(join(DIR, 'trash', 'p1', 'artifact.bin'), 'x'.repeat(32))
+// F-08：模拟「上一次启动损坏另存过、随后宿主又写了空壳」的磁盘状态。启动后应重新提示，
+// 而不是因为 journal.json 已经可解析就把事故静默掉。
+const CORRUPT = join(DIR, 'journal.json.corrupt-fixture')
+writeFileSync(CORRUPT, '{ leftover corrupt fixture')
+mkdirSync(join(DIR, 'backups'), { recursive: true })
+writeFileSync(join(DIR, 'backups', 'restore-me.json'), JSON.stringify(journal, null, 2))
 
 const { apply } = await import('../index.js')
 
@@ -245,4 +251,50 @@ test('未归属会话迁出时把它的阶段一起带走，不留悬空指针',
   assert.ok(rows.get('p1').sessionIds.includes('su'), 'workspace row must claim the session')
   const consistency = await call('/api/consistency/fix?projectId=p1')
   assert.equal(consistency.json.remaining, 0)
+})
+
+test('残留 .corrupt-* 时启动即重新提示，diagnostics 暴露 corruptFiles', async () => {
+  const state = await call('/api/state')
+  const error = state.json.journalError
+  assert.ok(error !== null, '重启后横幅应重新出现')
+  assert.equal(error.reason, 'corrupt-backup-present')
+  assert.equal(error.original, join(DIR, 'journal.json'))
+  assert.match(error.file, /\.corrupt-fixture$/)
+
+  const diag = await call('/api/diagnostics')
+  const files = diag.json.corruptFiles
+  assert.ok(Array.isArray(files) && files.length >= 1, 'diagnostics 应列出损坏另存')
+  const entry = files.find((item) => item.path === CORRUPT)
+  assert.ok(entry, 'diagnostics 条目应指向 .corrupt-* 文件')
+  assert.ok(entry.bytes > 0)
+  assert.match(entry.at, /^\d{4}-\d{2}-\d{2}T/)
+})
+
+test('dismiss 按 .at 会话内忽略：同一次启动不再出现，重复点也无害', async () => {
+  const first = await call('/api/journal/dismiss-error?confirm=1')
+  assert.equal(first.status, 200, first.text)
+  assert.equal(first.json.ok, true)
+  assert.equal(first.json.journalError, null)
+
+  const state = await call('/api/state')
+  assert.equal(state.json.journalError, null, '同一 .at 不应再弹')
+
+  const again = await call('/api/journal/dismiss-error?confirm=1')
+  assert.equal(again.json.ok, true, '重复忽略不应报错')
+})
+
+test('从备份恢复后写恢复记录并清横幅；再启动也不反弹', async () => {
+  const restored = await call('/api/backup/restore?file=restore-me.json')
+  assert.equal(restored.status, 200, restored.text)
+  assert.equal(restored.json.ok, true)
+
+  const record = join(DIR, 'journal.last-restore.json')
+  assert.equal(existsSync(record), true, '恢复成功后应写恢复记录')
+  const state = await call('/api/state')
+  assert.equal(state.json.journalError, null, '恢复后横幅应消失')
+
+  // 模拟下一次启动：同一份 .corrupt-* 已被恢复记录覆盖，不应反弹。
+  const store = await import('../journal-store.js')
+  store.loadJournal()
+  assert.equal(store.journalLoadError(), null, '恢复记录应覆盖更早的损坏另存')
 })

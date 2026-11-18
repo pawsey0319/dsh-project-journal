@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -173,12 +173,17 @@ test('自动归纳式 saveJournal 写回不清 corrupt 横幅，只有显式 cle
   store.saveJournal(shell)
   assert.ok(store.journalLoadError() !== null, '含阶段的自动写回同样不应清掉警告')
 
-  // 显式清除（restoreBackup / dismiss 走的路径）。
+  // 显式清除（dismiss 走的路径）只清内存：下次启动仍会因残留 .corrupt-* 重新提示，
+  // 这正是 F-08 要求的「重启后仍会提示」。真正的持久清除是 recordRestore()。
   store.clearJournalLoadError()
   assert.equal(store.journalLoadError(), null)
   const reloaded = store.loadJournal()
-  assert.equal(store.journalLoadError(), null, '重新加载健康文件不应再报错')
+  assert.ok(store.journalLoadError() !== null, '仅 clear 后重启：残留 .corrupt-* 应重新提示')
+  assert.equal(store.journalLoadError().reason, 'corrupt-backup-present')
   assert.equal(reloaded.projects.p9.phases.length, 1)
+  store.recordRestore()
+  store.loadJournal()
+  assert.equal(store.journalLoadError(), null, '恢复记录之后重新加载不应再提示')
 })
 
 test('clearJournalLoadError 可显式清除 corrupt 横幅状态', () => {
@@ -188,4 +193,53 @@ test('clearJournalLoadError 可显式清除 corrupt 横幅状态', () => {
   assert.ok(store.journalLoadError() !== null)
   store.clearJournalLoadError()
   assert.equal(store.journalLoadError(), null)
+})
+
+/** 清掉历史用例留下的 .corrupt-* 与恢复记录，让「重启」场景从干净状态开始。 */
+function resetCorruptState() {
+  for (const name of readdirSync(store.DIR)) {
+    if (name.startsWith('journal.json.corrupt-')) rmSync(join(store.DIR, name), { force: true })
+  }
+  rmSync(store.RESTORE_RECORD, { force: true })
+  store.clearJournalLoadError()
+}
+
+/** 造一份 .corrupt-* 残留，并把 mtime 固定到指定毫秒，避免同毫秒写入导致断言抖动。 */
+function leftoverCorrupt(name, mtimeMs) {
+  const path = join(store.DIR, `journal.json.corrupt-${name}`)
+  writeFileSync(path, '{ leftover corrupt')
+  utimesSync(path, mtimeMs / 1000, mtimeMs / 1000)
+  return path
+}
+
+test('重启场景：残留 .corrupt-* 且未恢复 → loadJournal 重新置错（corrupt-backup-present）', () => {
+  resetCorruptState()
+  store.saveJournal(store.emptyJournal())
+  const path = leftoverCorrupt('boot1', Date.now() + 60_000)
+  const loaded = store.loadJournal()
+  assert.equal(loaded.version, 3, '健康 journal.json 仍能读到')
+  const error = store.journalLoadError()
+  assert.ok(error !== null, '重启后应重新提示损坏另存')
+  assert.equal(error.reason, 'corrupt-backup-present')
+  assert.equal(error.original, store.FILE)
+  assert.equal(error.file, path)
+  assert.equal(error.bytes, statSync(path).size)
+  assert.ok(store.corruptBackups().some((entry) => entry.path === path), 'corruptFiles 清单应包含该文件')
+})
+
+test('恢复记录之后不反弹；比恢复记录更新的新损坏会再次提示', () => {
+  resetCorruptState()
+  const stale = leftoverCorrupt('resolved', Date.now() - 120_000)
+  store.saveJournal(store.emptyJournal())
+  store.recordRestore()
+  store.loadJournal()
+  assert.equal(store.journalLoadError(), null, '恢复记录已覆盖更早的损坏另存')
+  assert.ok(store.corruptBackups().some((entry) => entry.path === stale), '文件仍保留在磁盘上，只是不再提示')
+
+  // 恢复之后又坏了一次：新损坏应重新置错。
+  const fresh = leftoverCorrupt('after-restore', Date.now() + 5_000)
+  store.loadJournal()
+  const error = store.journalLoadError()
+  assert.ok(error !== null, '新的损坏另存应重新提示')
+  assert.equal(error.file, fresh)
 })

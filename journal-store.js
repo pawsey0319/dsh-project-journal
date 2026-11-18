@@ -26,8 +26,68 @@ const STATUSES = new Set(['done', 'active', 'planned'])
 /** Last loadJournal() failure (corrupt file), or null when loading was fine. */
 let loadError = null
 
+const CORRUPT_PREFIX = 'journal.json.corrupt-'
+
+/** Timestamp of the last successful backup restore (ms), recorded on disk. */
+export const RESTORE_RECORD = join(DIR, 'journal.last-restore.json')
+
 export function journalLoadError() {
   return loadError
+}
+
+/**
+ * Corrupt journal files kept next to journal.json (newest first). Only the
+ * file name, size and mtime are read — never the payload.
+ */
+export function corruptBackups() {
+  let names = []
+  try {
+    names = readdirSync(DIR)
+  } catch {
+    return []
+  }
+  const list = []
+  for (const name of names) {
+    if (!name.startsWith(CORRUPT_PREFIX)) continue
+    const path = join(DIR, name)
+    try {
+      const stats = statSync(path)
+      if (!stats.isFile()) continue
+      list.push({ path, bytes: stats.size, at: new Date(stats.mtimeMs).toISOString(), mtimeMs: stats.mtimeMs })
+    } catch {}
+  }
+  return list.sort((a, b) => b.mtimeMs - a.mtimeMs)
+}
+
+function lastRestoreAt() {
+  try {
+    const raw = JSON.parse(readFileSync(RESTORE_RECORD, 'utf8'))
+    const ms = Date.parse(raw?.at)
+    return Number.isFinite(ms) ? ms : null
+  } catch {
+    return null
+  }
+}
+
+/** Remember that a backup restore superseded every corrupt copy older than now. */
+export function recordRestore() {
+  try {
+    mkdirSync(DIR, { recursive: true })
+    writeFileSync(RESTORE_RECORD, JSON.stringify({ at: new Date().toISOString() }, null, 2))
+  } catch {}
+}
+
+/**
+ * Corrupt copies that still need to be surfaced. `.corrupt-*` files are written
+ * before the boot path persists its empty recovery journal, so their mtime is
+ * OLDER than journal.json on the next boot — comparing against journal.json
+ * would hide them. A restore record instead marks "everything up to here was
+ * resolved"; anything newer is a fresh corruption and re-arms the warning.
+ */
+function pendingCorruptBackups() {
+  const restoredAt = lastRestoreAt()
+  const list = corruptBackups()
+  return restoredAt === null ? list : list.filter((entry) => Math.floor(entry.mtimeMs) > restoredAt)
 }
 
 /**
@@ -126,7 +186,17 @@ export function loadJournal() {
       if (record.state === 'summarizing' || record.state === 'queued') record.state = 'idle'
     }
     migrateJournal(state)
-    loadError = null
+    const pending = pendingCorruptBackups()[0]
+    loadError =
+      pending === undefined
+        ? null
+        : {
+            at: pending.at,
+            original: FILE,
+            file: pending.path,
+            bytes: pending.bytes,
+            reason: 'corrupt-backup-present',
+          }
     return state
   } catch (error) {
     // A corrupt journal must never be silently replaced by an empty one: keep the
@@ -137,7 +207,12 @@ export function loadJournal() {
       const corrupt = `${FILE}.corrupt-${stamp}`
       try {
         renameSync(FILE, corrupt)
-        loadError = { at: new Date().toISOString(), file: corrupt, reason: String(error?.message ?? error) }
+        loadError = {
+          at: new Date().toISOString(),
+          original: FILE,
+          file: corrupt,
+          reason: String(error?.message ?? error),
+        }
         console.warn('[project-journal] journal.json 无法解析，已另存为', corrupt, loadError.reason)
       } catch (renameError) {
         loadError = { at: new Date().toISOString(), file: FILE, reason: `无法解析且无法另存：${String(renameError?.message ?? renameError)}` }
