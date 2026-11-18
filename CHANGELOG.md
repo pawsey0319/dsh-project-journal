@@ -3,6 +3,19 @@
 本插件的所有重要变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.2.5] - 2026-11-18
+
+补掉 R1，并把分发方式从 npm 改为 GitHub Release（npm 侧有 2FA / 组织策略限制，本项目不为此开例外）。
+
+### 修复
+
+- **R1：journal.json 不存在但仍有 `.corrupt-*` 时不再静默**。此前 `loadJournal()` 走 ENOENT 分支直接返回空 journal，不扫残留损坏副本，面板显示 0 个项目而可恢复数据就在旁边。现在该分支同样查 `pendingCorruptBackups()`，未恢复的残留会置 `journalError.reason = 'corrupt-backup-present'`；已被恢复记录覆盖的旧副本仍不误报。
+- 新增两条单测：「`journal.json` 完全不存在、只剩 `.corrupt-*` → 仍提示」「`journal.json` 不存在但恢复记录已覆盖 → 不误报」。
+
+### 变更
+
+- **分发路线**：不再通过 npm 发布。安装改为 ① git clone + 本地路径 `install_bundle`；② `link:` 到 profile；③ 下载 GitHub Release 的 `dsh-project-journal-0.2.5.tgz` 解包后本地安装。README 顶部与安装章节已按此重写，并明确「按版本号 install_bundle 会 404」。
+
 ## [0.2.4] - 2026-11-18
 
 修复 F-08：v0.2.3 的「重启后仍会告警」并不成立——损坏启动时 `.corrupt-*` 确实写了，但宿主紧接着把空壳写回 `journal.json`；下次启动文件可解析，`loadError` 归零，横幅消失、阶段静默丢失。J-06 的「不静默清空」此前只覆盖单次会话。

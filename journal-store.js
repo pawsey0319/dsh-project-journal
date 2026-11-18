@@ -217,6 +217,22 @@ export function loadJournal() {
       } catch (renameError) {
         loadError = { at: new Date().toISOString(), file: FILE, reason: `无法解析且无法另存：${String(renameError?.message ?? renameError)}` }
       }
+    } else {
+      // journal.json is gone but corrupt copies may still be on disk (the user
+      // deleted the empty recovery file, or a restore never happened). Surface
+      // them here too, otherwise the panel would silently show an empty project
+      // list while recoverable data sits next to it.
+      const pending = pendingCorruptBackups()[0]
+      loadError =
+        pending === undefined
+          ? null
+          : {
+              at: pending.at,
+              original: FILE,
+              file: pending.path,
+              bytes: pending.bytes,
+              reason: 'corrupt-backup-present',
+            }
     }
     return emptyJournal()
   }

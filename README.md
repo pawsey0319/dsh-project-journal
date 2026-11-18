@@ -65,12 +65,13 @@ DSH 的会话是按工作目录组织的，但真实工作往往跨目录：调�
 
 ### 方式 A：插件管理器安装（本地路径 / link，推荐）
 
-> **本包尚未上架 npm**（`npm publish` 需要 2FA/OTP，至今没有发布过任何 npm 版本）。因此**不要**用 `plugin_manager action=install_bundle target="@pawsey0319/dsh-project-journal@版本号"` 这种 npm 版本号安装，那条路现在会 404。当前可用方式：
+> **本包暂不通过 npm 分发**（npm 侧有 2FA / 组织策略限制，本项目也不会为此开例外）。因此**不要**用 `plugin_manager action=install_bundle target="@pawsey0319/dsh-project-journal@版本号"` 这种 npm 版本号安装——那条路会 404。当前可用的安装路线：
 >
-> 1. 先按**方式 C** `git clone` 本仓库到本地；
-> 2. 再用本节的**本地路径**安装，或按**方式 B** 把 clone 目录 `link:` 进 profile。
+> 1. **方式 C** `git clone` 本仓库，再按本节用本地绝对路径安装；
+> 2. **方式 B** 把 clone 目录 `link:` 进 profile；
+> 3. **方式 D** 下载 GitHub Release 里的 `dsh-project-journal-<版本>.tgz`，解包后按本节本地路径安装（不依赖 git、不依赖 npm）。
 >
-> 等包真正上架 npm 之后，才可以改回按版本号安装。
+> 版本升级同样走 ①/②/③：换 tag 或换 tgz，再 disable → enable 一次。
 
 本地路径安装（把路径换成 clone 后的仓库绝对路径）：
 
@@ -115,6 +116,19 @@ cd ~/.dsh/profiles/desktop && corepack pnpm install   # 也可 corepack pnpm add
     - id: dsh-project-journal
       name: '@pawsey0319/dsh-project-journal'
 ```
+
+### 方式 D：GitHub Release 压缩包（不装 git、不装 npm）
+
+每个 tag 都附带一个 `npm pack` 产物：
+
+```bash
+mkdir -p ~/.dsh-plugins && cd ~/.dsh-plugins
+curl -L -o pj.tgz https://github.com/pawsey0319/dsh-project-journal/releases/download/v0.2.5/dsh-project-journal-0.2.5.tgz
+mkdir -p dsh-project-journal && tar -xzf pj.tgz -C dsh-project-journal --strip-components=1
+```
+
+然后按**方式 A** 用 `~/.dsh-plugins/dsh-project-journal` 的绝对路径安装，或按**方式 B** `link:` 进 profile。
+压缩包是发布产物（`files[]` 内的 12 个文件），不含 `node_modules`、`docs/`、`test/` 之外的开发依赖；要跑单测请用方式 C 的 clone。
 
 ### 方式 C：从 GitHub clone 后安装
 
@@ -340,8 +354,8 @@ dsh-project-journal/
 
 Project Journal keeps a durable, per-project chain of phases, next steps and problem records for every DSH session, and can migrate a session back to the project it really belongs to.
 
-- Package: `@pawsey0319/dsh-project-journal` (v0.2.4, MIT; not published to npm yet — publishing requires 2FA)
-- Install it from the DSH Plugin Manager using the local checkout path (npm is not published yet) and enable the bundle; it registers a sidebar entry, a per-session move button and a full-screen overlay panel. Local development can link the repo into `~/.dsh/profiles/<profile>/package.json` and add it to `dsh.profile.bundles`.
+- Package: `@pawsey0319/dsh-project-journal` (v0.2.5, MIT; distributed via GitHub Releases, not npm)
+- Install it from the DSH Plugin Manager using a local checkout (or the release tarball), then enable the bundle; it registers a sidebar entry, a per-session move button and a full-screen overlay panel. Local development can link the repo into `~/.dsh/profiles/<profile>/package.json` and add it to `dsh.profile.bundles`. There is intentionally no npm distribution path.
 - Action clicks go through a single `act()` helper (72 call sites) that emits a `ui:<action>` beacon and routes failures to the panel error bar instead of throwing into the host.
 - Data stays in `~/.dsh/project-journal/journal.json`; summaries are produced by the model configured in DSH, and the model never receives file contents or images.
 - Writes use GET + query on purpose: DSH prefix routes only serve `GET`/`HEAD`. The surface is unauthenticated, so never expose the DSH port publicly.
