@@ -5,7 +5,7 @@
 把 DeepSeek Harness（DSH）里散落在各个会话中的「项目进展」整理成一条可回看的阶段链：每个项目一份进展记录，包含阶段、下一步和问题档案，并支持把会话一键迁回它真正所属的项目。
 
 - npm 包名：`@pawsey0319/dsh-project-journal`
-- 当前版本：`0.2.5`（见 [CHANGELOG.md](CHANGELOG.md)）
+- 当前版本：`0.4.0`（见 [CHANGELOG.md](CHANGELOG.md)）
 - 许可证：[MIT](LICENSE) © 2026 pawsey0319
 - 宿主：DSH（`manifestVersion: 1`，需要 Web 客户端与 `slots` 服务）
 
@@ -42,7 +42,7 @@ DSH 的会话是按工作目录组织的，但真实工作往往跨目录：调�
 | `sidebar.workspaces.session.row.action` | 会话行右侧的「移入其他项目」按钮 |
 | `shell.overlay` | 全屏的「项目进展」面板（搜索、阶段链、分支、回收站、设置） |
 
-面板内的动作点击统一经过 `act()` 入口（共 72 处，另有一个 `stopClickBubble` 只做事件拦截）：打一条 `ui:<动作>` 诊断信标，并把同步/异步异常收敛到面板顶部的错误条，不会冒泡到宿主或其它插件的全局点击处理。
+面板内的动作点击统一经过 `act()` 入口（共 85 处，另有一个 `stopClickBubble` 只做事件拦截）：打一条 `ui:<动作>` 诊断信标，并把同步/异步异常收敛到面板顶部的错误条，不会冒泡到宿主或其它插件的全局点击处理。
 
 ## 界面说明（暂无截图）
 
@@ -123,12 +123,14 @@ cd ~/.dsh/profiles/desktop && corepack pnpm install   # 也可 corepack pnpm add
 
 ```bash
 mkdir -p ~/.dsh-plugins && cd ~/.dsh-plugins
-curl -L -o pj.tgz https://github.com/pawsey0319/dsh-project-journal/releases/download/v0.2.5/dsh-project-journal-0.2.5.tgz
+curl -L -o pj.tgz https://github.com/pawsey0319/dsh-project-journal/releases/download/v0.4.0/dsh-project-journal-0.4.0.tgz
 mkdir -p dsh-project-journal && tar -xzf pj.tgz -C dsh-project-journal --strip-components=1
 ```
 
 然后按**方式 A** 用 `~/.dsh-plugins/dsh-project-journal` 的绝对路径安装，或按**方式 B** `link:` 进 profile。
-压缩包是发布产物（`files[]` 内的 12 个文件：三个 JS、`locale/`、`test/`、README、CHANGELOG、LICENSE、`package.json`、`cordis.patch.yml`），不含 `node_modules` 与 `docs/`；不需要开发依赖，解包后可直接 `node --test test/*.test.mjs`。
+压缩包是发布产物（`files[]` 内的 15 个文件：三个 JS、`locale/`、`scripts/` 三道文档/无障碍/主题闸门、`test/` 两个用例文件、README、CHANGELOG、LICENSE、`package.json`、`cordis.patch.yml`），不含 `node_modules` 与 `docs/`；不需要开发依赖，解包后可直接 `node --test test/*.test.mjs`。
+
+> 资产名口径：`npm pack` 对 `@pawsey0319/dsh-project-journal` 产出的实际文件名是 `pawsey0319-dsh-project-journal-<版本>.tgz`（`@` 与 `/` 都换成 `-`），而 Release 资产统一用**去 scope** 的 `dsh-project-journal-<版本>.tgz`——上传前先改文件名（`gh release upload` 用文件 basename 作资产名）。本 README 的下载链接用的是去 scope 名；`npm run check` 会断言「资产名 = pack 名去掉 `pawsey0319-` 前缀」。
 
 ### 方式 C：从 GitHub clone 后安装
 
@@ -193,7 +195,7 @@ curl -s "$B/x-journal/api/backfill?action=reset"   # 游标重置为 -1 并重�
 
 回填是串行 worker、每会话一次模型调用，进度见 `/api/state` 的 `backfill` 或设置抽屉。
 
-**未归属会话**：不在任何 workspace 里的会话进 `unassigned` 桶，不能作为迁移目标，但同样会被归纳（按会话自身目标归纳 1–3 个阶段）；桶里长期为空时用「重新归纳本项目」带 `rebuild=1` 重读。
+**未归属会话**：不在任何 workspace 里的会话进 `unassigned` 桶，不能作为迁移目标，但同样会被归纳（按会话自身目标归纳 1–3 个阶段；是否新增阶段由模型判断，与普通项目同一套规则）；桶里长期为空时用「重新归纳本项目」带 `rebuild=1` 重读。
 
 ## 使用
 
@@ -209,7 +211,7 @@ curl -s "$B/x-journal/api/backfill?action=reset"   # 游标重置为 -1 并重�
 - **阶段**：一个阶段 = 一个目标变化或一个交付节点（不是一轮对话），含标题、摘要、状态（已完成/进行中/计划）、时间范围、来源会话、产物、问题、下一步；
 - **分支**：从阶段 K 开分支后，分叉点之前的阶段灰显只读，分支首节点标 `↺ 重做`；可标已合并/放弃/恢复/删除，已合并可「撤销合并」；
 - **删除阶段**：软删除进回收站（记录可恢复、产物移到 `trash/<projectId>/<phaseId>/`），永久清除需二次确认；
-- **修订**：手改阶段会记一条改前/改后快照（最多 20 条），可「回到这一版」。
+- **修订**：手改阶段或回退都会记一条改前/改后快照（最多 20 条）；阶段卡片顶部标出这段进展「谁写的、什么时候写的」（模型 / 你 / 回退 / 旧数据推断），点「查看全部 N 条」按需拉完整修订，可「回到这一版」。
 
 ## 数据与隐私
 
@@ -222,7 +224,7 @@ curl -s "$B/x-journal/api/backfill?action=reset"   # 游标重置为 -1 并重�
 ```text
 ~/.dsh/project-journal/
 ├── journal.json                 # 唯一事实源：config / projects / sessions / backfill
-├── backups/                     # 滚动备份（最多 8 份；含 workspace-<stamp>.json）
+├── backups/                     # 滚动备份（每类 tag 各保留最近 8 份：manual / restore / migrate / phase / branch / workspace / corrupt…）
 └── trash/<projectId>/<phaseId>/ # 软删除阶段的产物文件（恢复时原路移回）
 ```
 
@@ -241,7 +243,7 @@ curl -s "$B/x-journal/api/backfill?action=reset"   # 游标重置为 -1 并重�
 | --- | --- |
 | `/api/health` | 存活与版本、实际路由前缀、`clientGraph`、`sessionController` 可用性 |
 | `/api/diagnostics` | 维护用：会话状态分布、失败样本、`journal.json` 体积、备份数、队列/worker 状态 |
-| `/api/state` | 面板主数据：`projects[]`（含 `branches[]`/`phases[]`/`sessions[]`）、`config`、`backfill`、`reproject`、`summarizing`、`beacons`、模型就绪状态 |
+| `/api/state` | 面板主数据：`projects[]`（含 `branches[]`/`phases[]`/`sessions[]`）、`config`、`backfill`、`reproject`、`summarizing`、`beacons`、模型就绪状态。带 `ETag` 响应头（不含 `generatedAt`/`beacons`）；`If-None-Match` 命中时回 `304` 且无 body |
 | `/api/export?projectId=` | 导出该项目 Markdown（分支、阶段、问题与处理、下一步、产物） |
 | `/api/model-probe` | 清缓存后重新探测模型（只读） |
 | `/api/branch/seed?projectId=&phaseId=` | 开分支前预演：分支名、`fromSeq`、种子 prompt、可承接上下文 `{sessionId, seq, total}` |
@@ -250,6 +252,8 @@ curl -s "$B/x-journal/api/backfill?action=reset"   # 游标重置为 -1 并重�
 | `/api/trash` | 回收站占用、按项目统计、已软删阶段与产物清单 |
 | `/api/session-debug?sessionId=` | 维护用：事件数、turn 数、首/末条用户消息摘要 |
 | `/api/migrate?...&dryRun=1` | 迁移预演（不写库） |
+| `/api/phase/revisions?projectId=&phaseId=` | 某个阶段的完整修订历史（最近 20 条，新→旧；含 `by`/`before`/`after`/`restoredFrom` 与 `summaryMeta`） |
+| `/api/project/orphans` | 只读：已不在工作区、也不属于「未归属」的孤儿项目记录（含阶段/问题/会话/分支计数与 `deletable`） |
 
 ### 写操作
 
@@ -258,7 +262,7 @@ curl -s "$B/x-journal/api/backfill?action=reset"   # 游标重置为 -1 并重�
 | `/api/beacon` | `e`（信标名）`d`（detail） | 客户端诊断打点（落内存环形缓冲） |
 | `/api/config` | `provider` `model` `auto` `idleDelayMs` `minNewEvents` `maxInputChars` `maxPhaseContext` `throttleMs` | 改配置并落盘 |
 | `/api/backfill` | `action=start\|pause\|reset` | 历史回填 |
-| `/api/summarize` | `sessionId` `force=1` | 立即归纳某个会话（入队） |
+| `/api/summarize` | `sessionId` `force=1` `retry=1` | 立即归纳某个会话（入队）；`retry=1` 只对 `state=error` 的会话生效（清掉失败计数重新排一次，不动事件游标），其它状态回 `400 not-retryable` |
 | `/api/reproject` | `projectId` `action=stop` `rebuild=1` | 「重新归纳本项目」；`rebuild=1` 先重置游标再重读 |
 | `/api/migrate` | `sessionId` `targetProjectId` | 会话迁移（workspace 归属 + journal 归属 + 阶段随会话迁移，写前备份） |
 | `/api/branch` | `projectId` `phaseId` `title` `withSession=1` `mode=fork\|blank` `prompt` `sessionId` | 从阶段 K 开分支；默认 `fork` 承接上下文，失败降级为空白会话 + 种子 |
@@ -271,6 +275,9 @@ curl -s "$B/x-journal/api/backfill?action=reset"   # 游标重置为 -1 并重�
 | `/api/phase/rescan` | `projectId` `phaseId` | 重扫该阶段时间窗内的产物并补进 `artifacts` |
 | `/api/phase/restore-revision` | `projectId` `phaseId` `at` | 回到某一修订版（本身也记一条修订） |
 | `/api/problem` | `projectId` `phaseId` `statement` `resolution` `status=open\|solved` `problemId` `action=delete` | 补/改/删问题记录（写入即 `manual=true`） |
+| `/api/artifact/prune` | `projectId` `phaseId` | 把已不存在的文件从该阶段产物记录里移除（只删记录，不动磁盘） |
+| `/api/project/delete` | `projectId` `confirm=1` | 删除孤儿项目**记录**（阶段/问题/会话索引；不动项目目录，删前自动备份 journal）。拒绝：`confirm-required` / `bad-request` / `reserved-project` / `project-in-workspace` / `project-has-sessions` / `project-path-in-workspace` / `project-missing` |
+| `/api/journal/dismiss-error` | `confirm=1` | 会话内忽略 `journal.json` 损坏横幅（只丢内存标记，`.corrupt-*` 与日志保留） |
 | `/api/artifact/open` | `projectId` `name` `reveal=1` | 在项目目录内解析并打开产物，只允许项目路径内文件 |
 | `/api/trash/empty` | `confirm=1` `projectId`（可选） | 永久清空回收站文件（记录保留，产物不可再恢复） |
 | `/api/backup` | `action=create` | 立即备份 |
@@ -354,9 +361,9 @@ dsh-project-journal/
 
 Project Journal keeps a durable, per-project chain of phases, next steps and problem records for every DSH session, and can migrate a session back to the project it really belongs to.
 
-- Package: `@pawsey0319/dsh-project-journal` (v0.2.5, MIT; distributed via GitHub Releases, not npm)
+- Package: `@pawsey0319/dsh-project-journal` (v0.4.0, MIT; distributed via GitHub Releases, not npm)
 - Install it from the DSH Plugin Manager using a local checkout (or the release tarball), then enable the bundle; it registers a sidebar entry, a per-session move button and a full-screen overlay panel. Local development can link the repo into `~/.dsh/profiles/<profile>/package.json` and add it to `dsh.profile.bundles`. There is intentionally no npm distribution path.
-- Action clicks go through a single `act()` helper (72 call sites) that emits a `ui:<action>` beacon and routes failures to the panel error bar instead of throwing into the host.
+- Action clicks go through a single `act()` helper (85 call sites) that emits a `ui:<action>` beacon and routes failures to the panel error bar instead of throwing into the host.
 - Data stays in `~/.dsh/project-journal/journal.json`; summaries are produced by the model configured in DSH, and the model never receives file contents or images.
 - Writes use GET + query on purpose: DSH prefix routes only serve `GET`/`HEAD`. The surface is unauthenticated, so never expose the DSH port publicly.
 - Verify with `npm test` and `node --check index.js client.js journal-store.js`, then `curl $B/x-journal/api/health`.

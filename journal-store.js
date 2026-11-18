@@ -6,7 +6,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 
 export const DIR = join(homedir(), '.dsh', 'project-journal')
 export const FILE = join(DIR, 'journal.json')
@@ -314,6 +314,28 @@ export function migrateJournal(state) {
     project.phases = (project.phases ?? []).filter((phase) => {
       if (typeof phase.branchId !== 'string' || phase.branchId === '') phase.branchId = MAIN_BRANCH
       if (phase.redoOf === undefined) phase.redoOf = null
+      // 软删收口（t26 ⑤）：早期版本只写 deletedAt，raw.status 仍是 active/planned/done。
+      // 读时归一成 status:'deleted'，并把原状态存进 statusBeforeDelete 供恢复使用。
+      if (phase.deletedAt !== undefined && phase.deletedAt !== null) {
+        if (typeof phase.statusBeforeDelete !== 'string' || phase.statusBeforeDelete === 'deleted') {
+          phase.statusBeforeDelete = typeof phase.status === 'string' && phase.status !== 'deleted' ? phase.status : 'active'
+        }
+        phase.status = 'deleted'
+      } else if (phase.status === 'deleted') {
+        // 没有 deletedAt 却标 deleted 的脏数据：就当没删过，别让阶段凭空消失。
+        phase.status = typeof phase.statusBeforeDelete === 'string' && phase.statusBeforeDelete !== 'deleted' ? phase.statusBeforeDelete : 'active'
+        delete phase.statusBeforeDelete
+      }
+      // 问题档案的置信度：读时补齐（只加字段，不改写 statement/quote 历史）。
+      for (const problem of Array.isArray(phase.problems) ? phase.problems : []) {
+        if (problem === null || typeof problem !== 'object') continue
+        if (problem.confidence !== 'evidenced' && problem.confidence !== 'inferred') {
+          problem.confidence = typeof problem.quote === 'string' && problem.quote.trim() !== '' ? 'evidenced' : 'inferred'
+        }
+      }
+      // 作者元信息（v0.4.0）：迁移阶段**不补** summaryMeta。旧阶段缺失时由
+      // phaseSummaryMeta() 在读期推断（inferred:true），绝不把推断值写进磁盘——
+      // 一旦落盘，「作者：未知 · 旧数据推断」就变成了假的历史记录。
       return known.has(phase.branchId)
     })
     const active = project.branches.find((branch) => branch.id === project.activeBranchId)
@@ -574,6 +596,24 @@ export function applySummary(state, input) {
         phase.status = candidate.status
         if (candidate.status === 'done' && phase.endedAt === null) phase.endedAt = now
       }
+      // 作者元信息（v0.4.0）：只有模型真的改写了这条阶段内容才记一笔。
+      // manual 阶段内容没动，作者仍应显示上次手改的人（§14 Q3）。
+      // F5：没有真实作者信息（连模型名都没有）时干脆不写字段——让 phaseBrief 读时给
+      // `inferred: true` 的兜底，而不是往磁盘里塞一条 `by:'model', model:null` 的假记录。
+      const meta = input.meta === null || typeof input.meta !== 'object' ? {} : input.meta
+      const author = typeof meta.model === 'string' ? meta.model.trim() : ''
+      if (author !== '') {
+        phase.summaryMeta = {
+          v: 1,
+          by: 'model',
+          at: now,
+          model: author,
+          provider: typeof meta.provider === 'string' && meta.provider !== '' ? meta.provider : null,
+          sessionId: sessionId === undefined || sessionId === null ? null : String(sessionId),
+          seq: Number.isFinite(Number(source?.seq)) ? Number(source.seq) : null,
+          restoredFrom: null,
+        }
+      }
     }
     if (Array.isArray(candidate.nextSteps) && phase.manual !== true) {
       const steps = candidate.nextSteps
@@ -600,6 +640,7 @@ export function applySummary(state, input) {
       const quote = typeof candidateProblem.quote === 'string' && userText.includes(candidateProblem.quote.trim())
         ? clampText(candidateProblem.quote, MAX_PROBLEM_TEXT)
         : ''
+      const confidence = quote === '' ? 'inferred' : 'evidenced'
       const resolution = clampText(candidateProblem.resolution, MAX_PROBLEM_TEXT)
       const status = candidateProblem.status === 'open' ? 'open' : 'solved'
       const key = normalizeKey(statement)
@@ -610,12 +651,15 @@ export function applySummary(state, input) {
           existing.resolution = resolution
           existing.status = status
           if (quote !== '') existing.quote = quote
+          // 有原话就是有证据；没有就显式降级为推测（t26 ②）。
+          existing.confidence = quote === '' ? problemConfidence(existing) : 'evidenced'
         }
       } else {
         phase.problems.push({
           id: newId('pb'),
           statement,
           quote,
+          confidence,
           resolution,
           status,
           at: now,
@@ -640,7 +684,77 @@ export function applySummary(state, input) {
   return { created, touched: [...touched] }
 }
 
-export function phaseBrief(phase) {
+/**
+ * 问题档案的可信度（t26 ②）：有原话（quote）才算「有证据」，否则降级为推测。
+ * 旧数据没有 confidence 字段，读时按 quote 是否存在推导——不重写历史记录。
+ */
+export function problemConfidence(problem) {
+  if (problem === null || typeof problem !== 'object') return 'inferred'
+  if (problem.confidence === 'evidenced' || problem.confidence === 'inferred') return problem.confidence
+  return typeof problem.quote === 'string' && problem.quote.trim() !== '' ? 'evidenced' : 'inferred'
+}
+
+/** 一条 artifacts 记录的磁盘存在性（t26 ③）：面板据此置灰并提供清理。 */
+export function artifactEntries(projectPath, phase) {
+  const list = Array.isArray(phase?.artifacts) ? phase.artifacts : []
+  const root = typeof projectPath === 'string' ? projectPath : ''
+  return list.map((name) => {
+    const label = String(name ?? '')
+    const path = label === '' ? '' : isAbsolute(label) ? label : join(root, label)
+    let exists = false
+    if (path !== '') {
+      try {
+        exists = existsSync(path)
+      } catch {
+        exists = false
+      }
+    }
+    return { name: label, path, exists }
+  })
+}
+
+/**
+ * 归纳/手改/回退的作者四态（v0.4.0，设计 §5.2）。
+ * `model` 由摘要模型写入，`user` 是面板手改，`restore` 是回退一版，`unknown` 是旧数据推断。
+ */
+export const SUMMARY_AUTHORS = ['model', 'user', 'restore', 'unknown']
+
+/**
+ * 面板/导出看到的作者元信息：永远返回一个对象。
+ * 旧数据缺失或非法时给兜底并标 `inferred:true`——兜底只在内存里，不回写磁盘。
+ */
+export function phaseSummaryMeta(phase) {
+  const meta = phase?.summaryMeta
+  if (meta !== null && typeof meta === 'object' && typeof meta.at === 'string' && meta.at !== '') {
+    return {
+      v: 1,
+      by: SUMMARY_AUTHORS.includes(meta.by) ? meta.by : 'unknown',
+      at: meta.at,
+      model: typeof meta.model === 'string' && meta.model !== '' ? meta.model : null,
+      provider: typeof meta.provider === 'string' && meta.provider !== '' ? meta.provider : null,
+      sessionId: typeof meta.sessionId === 'string' && meta.sessionId !== '' ? meta.sessionId : null,
+      seq: Number.isFinite(Number(meta.seq)) ? Number(meta.seq) : null,
+      restoredFrom: typeof meta.restoredFrom === 'string' && meta.restoredFrom !== '' ? meta.restoredFrom : null,
+      inferred: false,
+    }
+  }
+  const at = typeof phase?.updatedAt === 'string' && phase.updatedAt !== ''
+    ? phase.updatedAt
+    : (typeof phase?.startedAt === 'string' && phase.startedAt !== '' ? phase.startedAt : null)
+  return {
+    v: 1,
+    by: phase?.manual === true ? 'user' : 'unknown',
+    at,
+    model: null,
+    provider: null,
+    sessionId: null,
+    seq: null,
+    restoredFrom: null,
+    inferred: true,
+  }
+}
+
+export function phaseBrief(phase, projectPath) {
   return {
     id: phase.id,
     seq: phase.seq,
@@ -653,9 +767,14 @@ export function phaseBrief(phase) {
     endedAt: phase.endedAt,
     sessions: phase.sessions,
     artifacts: phase.artifacts,
+    artifactStatus: artifactEntries(projectPath, phase),
     manual: phase.manual === true,
+    summaryMeta: phaseSummaryMeta(phase),
     nextSteps: Array.isArray(phase.nextSteps) ? phase.nextSteps : [],
-    problems: phase.problems,
+    problems: (Array.isArray(phase.problems) ? phase.problems : []).map((problem) => ({
+      ...problem,
+      confidence: problemConfidence(problem),
+    })),
     revisions: Array.isArray(phase.revisions) ? phase.revisions.slice(-5) : [],
     revisionCount: Array.isArray(phase.revisions) ? phase.revisions.length : 0,
   }

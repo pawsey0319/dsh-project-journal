@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -270,4 +270,132 @@ test('journal.json 不存在但恢复记录已覆盖 → 不误报（R1）', () 
   const loaded = store.loadJournal()
   assert.equal(Object.keys(loaded.projects).length, 0)
   assert.equal(store.journalLoadError(), null)
+})
+
+// ---------------------------------------------------------------------------
+// v0.4.0 阶段作者元信息（summaryMeta）：旧数据只读兜底、模型/人写三态
+// ---------------------------------------------------------------------------
+
+test('phaseBrief 对旧数据给兜底 summaryMeta（inferred），不改磁盘内容', () => {
+  const phase = {
+    id: 'ph-legacy',
+    seq: 1,
+    title: '旧阶段',
+    summary: '很久以前写的',
+    status: 'done',
+    branchId: 'main',
+    sessions: [],
+    problems: [],
+    nextSteps: [],
+    artifacts: [],
+    startedAt: '2026-01-02T03:04:05.000Z',
+    updatedAt: '2026-01-02T03:04:05.000Z',
+  }
+  const brief = store.phaseBrief(phase, '/tmp/pj-legacy')
+  assert.equal(brief.summaryMeta.v, 1)
+  assert.equal(brief.summaryMeta.by, 'unknown')
+  assert.equal(brief.summaryMeta.at, '2026-01-02T03:04:05.000Z')
+  assert.equal(brief.summaryMeta.inferred, true)
+  assert.equal(brief.summaryMeta.model, null)
+  assert.equal(phase.summaryMeta, undefined, '兜底只用于展示，不能回写阶段对象')
+})
+
+test('缺 summaryMeta 的旧阶段两次加载后磁盘上仍不出现该字段（inferred 只读）', () => {
+  const state = store.emptyJournal()
+  const item = store.ensureProject(state, { id: 'p-meta', title: '元信息项目', path: '/tmp/pj-meta' }, 0)
+  item.phases.push({
+    id: 'ph-no-meta',
+    seq: 1,
+    title: '没有作者信息',
+    summary: '',
+    status: 'active',
+    branchId: 'main',
+    sessions: [],
+    problems: [],
+    nextSteps: [],
+    artifacts: [],
+    createdAt: '2026-02-03T04:05:06.000Z',
+    updatedAt: '2026-02-03T04:05:06.000Z',
+  })
+  store.saveJournal(state)
+  const before = readFileSync(store.FILE, 'utf8')
+  assert.equal(before.includes('"summaryMeta"'), false, '写入前就不该有 summaryMeta')
+
+  // 连跑两次加载：迁移阶段不得把推断值（by:unknown）补进磁盘。
+  const first = store.loadJournal()
+  const second = store.loadJournal()
+  const after = readFileSync(store.FILE, 'utf8')
+  assert.equal(after, before, '两次加载不得改写 journal.json')
+  assert.equal(after.includes('"summaryMeta"'), false, 'inferred 兜底只读，不能落盘')
+  assert.equal(second.projects['p-meta'].phases[0].summaryMeta, undefined)
+
+  // 但读期仍然给得出兜底（面板要显示「作者：未知 · 旧数据推断」）。
+  const brief = store.phaseBrief(first.projects['p-meta'].phases[0], '/tmp/pj-meta')
+  assert.equal(brief.summaryMeta.by, 'unknown')
+  assert.equal(brief.summaryMeta.at, '2026-02-03T04:05:06.000Z', '缺 at 时取阶段自己的时间，而不是「现在」')
+  assert.equal(brief.summaryMeta.inferred, true)
+})
+
+test('applySummary 写作者=model；manual 阶段既不覆盖内容也不冒名', () => {
+  const { state, project: item } = project()
+  const parsed = {
+    phases: [{
+      title: '作者元信息',
+      summary: '模型写的摘要',
+      artifacts: [],
+      nextSteps: [],
+      problems: [],
+    }],
+  }
+  store.applySummary(state, {
+    project: item,
+    sessionId: 's-meta',
+    sessionStart: 1760000000000,
+    parsed,
+    userText: '这一段有原文',
+    source: { sessionId: 's-meta', seq: 7 },
+    meta: { model: 'deepseek-chat', provider: 'deepseek' },
+  })
+  const phase = item.phases[0]
+  assert.equal(phase.summaryMeta.by, 'model')
+  assert.equal(phase.summaryMeta.model, 'deepseek-chat')
+  assert.equal(phase.summaryMeta.provider, 'deepseek')
+  assert.equal(phase.summaryMeta.sessionId, 's-meta')
+  assert.equal(phase.summaryMeta.seq, 7)
+  assert.match(phase.summaryMeta.at, /^\d{4}-\d{2}-\d{2}T/)
+
+  // 人改过的阶段：模型再归纳也不能改内容，作者仍应是上次手改/回退的人。
+  phase.manual = true
+  phase.summary = '人工确认过的版本'
+  phase.summaryMeta = { v: 1, by: 'user', at: '2026-03-04T05:06:07.000Z', model: null, provider: null, sessionId: null, seq: null, restoredFrom: null }
+  store.applySummary(state, {
+    project: item,
+    sessionId: 's-meta',
+    sessionStart: 1760000000000,
+    parsed: { phases: [{ title: '作者元信息', summary: '模型又想覆盖', artifacts: [], nextSteps: [], problems: [] }] },
+    userText: '这一段有原文',
+    source: { sessionId: 's-meta', seq: 9 },
+    meta: { model: 'deepseek-chat', provider: 'deepseek' },
+  })
+  assert.equal(phase.summary, '人工确认过的版本', 'manual 阶段内容不得被覆盖')
+  assert.equal(phase.summaryMeta.by, 'user', 'manual 阶段不能被标成 model')
+  assert.equal(phase.summaryMeta.at, '2026-03-04T05:06:07.000Z')
+})
+
+test('applySummary 没有模型名时不写 summaryMeta（缺省交给读期推断）', () => {
+  const { state, project: item } = project()
+  store.applySummary(state, {
+    project: item,
+    sessionId: 's-anon',
+    sessionStart: 1760000000000,
+    parsed: { phases: [{ title: '匿名作者', summary: '模型写的但没有 model 名', artifacts: [], nextSteps: [], problems: [] }] },
+    userText: '',
+    source: { sessionId: 's-anon', seq: 1 },
+  })
+  const phase = item.phases[0]
+  // F5：没有真实作者信息就别往磁盘写一条 by:'model' + model:null 的假记录。
+  assert.equal('summaryMeta' in phase, false, '缺 author 时不得落 summaryMeta 字段')
+  const brief = store.phaseBrief(phase, '/tmp/pj-test-project')
+  assert.equal(brief.summaryMeta.by, 'unknown')
+  assert.equal(brief.summaryMeta.inferred, true)
 })

@@ -9,6 +9,7 @@
  *   - expose everything over one HTTP prefix for the client half.
  */
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
@@ -20,6 +21,7 @@ import {
   MAX_BRANCHES,
   UNASSIGNED,
   applySummary,
+  artifactEntries,
   branchContext,
   branchOf,
   branchPhases,
@@ -35,7 +37,9 @@ import {
   migrateJournal,
   newId,
   phaseBrief,
+  phaseSummaryMeta,
   phaseContext,
+  problemConfidence,
   purgeTrash,
   recordRestore,
   resequence,
@@ -125,11 +129,51 @@ const NUMERIC_BOUNDS = {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-function json(value, status = 200) {
+function json(value, status = 200, extra = null) {
   return new Response(JSON.stringify(value), {
     status,
-    headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+    headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...(extra ?? {}) },
   })
+}
+
+/**
+ * /api/state 的弱内容指纹（v0.4.0）：把每次都会变的 generatedAt / beacons 剔掉再算，
+ * 这样「内容没变」时能回 304，客户端不用重拉 390 KiB。（设计 §6.2）
+ */
+function stateEtag(value) {
+  // 不 structuredClone：400 KiB 的对象图深拷贝本身就要 2 ms 上下，而指纹只需要
+  // 「按顶层 key 顺序增量喂字节」。同一个 key 序列 + 同一份内容 ⇒ 同一个 ETag。
+  const hash = createHash('sha1')
+  if (value !== null && typeof value === 'object' && Array.isArray(value) === false) {
+    for (const key of Object.keys(value)) {
+      if (key === 'generatedAt' || key === 'beacons') continue
+      hash.update(key)
+      hash.update('\u0000')
+      hash.update(JSON.stringify(value[key]) ?? 'null')
+    }
+  } else {
+    hash.update(JSON.stringify(value) ?? 'null')
+  }
+  return `"${hash.digest('base64url').slice(0, 27)}"`
+}
+
+// 导出与面板同一口径的作者行（t6 F8：Markdown 导出也要能看出「这段是谁写的」）。
+// 时间用 ISO，方便在导出文件里直接 grep；面板用本地化时间，两者语义一致。
+const SUMMARY_AUTHOR_TEXT = { model: '模型', user: '你', restore: '回退', unknown: '未知' }
+function summaryMetaLine(phase) {
+  const meta = phaseSummaryMeta(phase)
+  const who = SUMMARY_AUTHOR_TEXT[meta.by] ?? '未知'
+  const model = meta.by === 'model' && typeof meta.model === 'string' && meta.model !== '' ? `（${meta.model}）` : ''
+  const when = typeof meta.at === 'string' && meta.at !== '' ? ` · ${meta.at}` : ''
+  const restored = typeof meta.restoredFrom === 'string' && meta.restoredFrom !== '' ? ` · 回到 ${meta.restoredFrom} 那一版` : ''
+  const inferred = meta.inferred === true ? ' · 旧数据推断' : ''
+  return `作者：${who}${model}${when}${restored}${inferred}`
+}
+
+function etagMatches(header, etag) {
+  const raw = String(header ?? '').trim()
+  if (raw === '') return false
+  return raw.split(',').map((item) => item.trim().replace(/^W\//, '')).includes(etag)
 }
 
 function parseModelJson(text) {
@@ -390,6 +434,86 @@ export function apply(ctx) {
     }
   }
 
+  // --------------------------------------------------------------- model probe
+  // t26 ④：modelCache 只说明「解析到了候选模型」，不代表 provider 真的可达。
+  // 这里做一次 ≤16 token 的轻量探活，60s 内复用结果，超时/报错降级为 unreachable。
+  const PROBE_TTL_MS = 60_000
+  const PROBE_TIMEOUT_MS = 8_000
+  let modelProbe = null
+  let modelProbeRunning = null
+
+  async function probeModel({ force = false } = {}) {
+    if (!force && modelProbe !== null && Date.now() - modelProbe.at < PROBE_TTL_MS) return modelProbe
+    if (modelProbeRunning !== null) return modelProbeRunning
+    modelProbeRunning = (async () => {
+      const started = Date.now()
+      const resolved = await resolveModel()
+      if (resolved === null) {
+        modelProbe = {
+          at: Date.now(),
+          ok: false,
+          kind: 'degraded',
+          providerState: 'unreachable',
+          provider: state.config.provider ?? null,
+          model: state.config.model ?? null,
+          latencyMs: 0,
+          error: modelError ?? '模型不可用',
+        }
+        return modelProbe
+      }
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS)
+      try {
+        let text = ''
+        const stream = ctx.llm.stream({
+          provider: resolved.provider,
+          model: resolved.model,
+          reasoningEffort: 'off',
+          temperature: 0,
+          maxTokens: 8,
+          system: '只回复 ok，不要别的字。',
+          messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+          signal: controller.signal,
+          purpose: 'project-journal-probe',
+        })
+        for await (const chunk of stream) {
+          if (chunk?.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text
+          else if (chunk?.type === 'finish') break
+          if (text.length > 64) break
+        }
+        modelProbe = {
+          at: Date.now(),
+          ok: true,
+          kind: 'live',
+          providerState: 'ok',
+          provider: resolved.provider,
+          model: resolved.model,
+          latencyMs: Date.now() - started,
+          reply: text.trim().slice(0, 24),
+          error: null,
+        }
+      } catch (error) {
+        const aborted = controller.signal.aborted === true
+        modelProbe = {
+          at: Date.now(),
+          ok: false,
+          kind: aborted ? 'timeout' : 'error',
+          providerState: 'unreachable',
+          provider: resolved.provider,
+          model: resolved.model,
+          latencyMs: Date.now() - started,
+          error: aborted ? `探活超时（${PROBE_TIMEOUT_MS}ms）` : String(error?.message ?? error),
+        }
+      } finally {
+        clearTimeout(timer)
+      }
+      return modelProbe
+    })().finally(() => {
+      modelProbeRunning = null
+    })
+    return modelProbeRunning
+  }
+
   function buildPrompt(project, digest) {
     const system = [
       '你是项目日志整理器，把一段会话记录整理成项目阶段链。只输出 JSON，不要解释。',
@@ -398,6 +522,7 @@ export function apply(ctx) {
       'summary 写“做了什么、为什么这样做”，让几个月后的人能读懂；problems 记录用户当时遇到的真实问题与处理方式。',
       'nextSteps 写“接下来还需要做什么”（用户视角、可执行的具体动作，最多 3 条，各≤40字）；status=active 的阶段至少给 1 条，status=done 可留空。',
       'quote 必须逐字复制下面 U: 行里的一段连续原文，找不到就留空字符串，绝不改写。不要编造任何事实。',
+      'problems 的每一项都必须带 quote（用户原话片段）：没有原话就不要输出这一项——推测内容不允许写进 problems。',
       '输出格式：{"phases":[{"id":"已有阶段id或空","title":"阶段名≤20字","summary":"≤200字","status":"done|active","artifacts":["产物"],"nextSteps":["接下来做什么"],"problems":[{"statement":"问题","quote":"用户原话","resolution":"怎么处理","status":"solved|open"}]}]}',
       '没有阶段变化但可补充问题时，返回该阶段的 id 并只写 problems。',
       project.locked === true
@@ -458,6 +583,7 @@ export function apply(ctx) {
         record.state = 'done'
         record.cursorSeq = Math.max(record.cursorSeq, digest.maxSeq)
         record.lastError = null
+        record.dirtyAt = null
         saveJournal(state)
         return
       }
@@ -465,6 +591,7 @@ export function apply(ctx) {
         record.state = 'done'
         record.cursorSeq = digest.maxSeq
         record.lastError = null
+        record.dirtyAt = null
         saveJournal(state)
         return
       }
@@ -516,6 +643,7 @@ export function apply(ctx) {
         parsed,
         userText: digest.userText,
         branchId,
+        meta: { model: model.label, provider: model.provider },
         source: { sessionId, seq: digest.maxSeq },
       })
       record.cursorSeq = digest.maxSeq
@@ -523,6 +651,7 @@ export function apply(ctx) {
       record.state = 'done'
       record.attempts = 0
       record.lastError = null
+      record.dirtyAt = null
       if (project.locked !== true) {
         try {
           const since = Date.parse(record.createdAt ?? '') || Date.now() - 86400000
@@ -609,6 +738,8 @@ export function apply(ctx) {
       if (record === undefined) return
       if (record.state === 'summarizing') return
       record.state = 'queued'
+      // 新活动进入队列：在汇总完成前，这条会话的已有摘要视为「过期」（t26 ①）。
+      record.dirtyAt = new Date().toISOString()
       if (!queued.has(sessionId)) {
         queued.add(sessionId)
         queue.push(sessionId)
@@ -1024,7 +1155,7 @@ async function resolvePhaseSource(project, phase) {
     const project = state.projects[projectId]
     if (project === undefined) return { error: 'project-missing' }
     const branch = branchOf(project, branchId)
-    if (branch === undefined) return { error: 'branch-missing' }
+    if (branch === undefined) return { error: 'branch-missing', message: 'missing required query parameter: branchId' }
     if (branchId === MAIN_BRANCH) return { error: 'cannot-modify-main' }
     if (action === 'rename') {
       const title = String(rawTitle ?? '').trim()
@@ -1050,7 +1181,7 @@ async function resolvePhaseSource(project, phase) {
     if (project === undefined) return { error: 'project-missing' }
     if (branchId === MAIN_BRANCH) return { error: 'cannot-delete-main' }
     const branch = branchOf(project, branchId)
-    if (branch === undefined) return { error: 'branch-missing' }
+    if (branch === undefined) return { error: 'branch-missing', message: 'missing required query parameter: branchId' }
     if (branch.status !== 'abandoned') return { error: 'branch-not-abandoned' }
     const phases = branchPhases(project, branchId)
     const busy = phases.filter(
@@ -1066,6 +1197,8 @@ async function resolvePhaseSource(project, phase) {
     // 分支里的每个阶段都要进回收站：以前只处理「有内容」的阶段，空阶段被直接丢弃，
     // 用户既看不到也恢复不了（例如刚 fork 出来还没用的重做阶段）。
     for (const phase of phases) {
+      if (typeof phase.status === 'string' && phase.status !== 'deleted') phase.statusBeforeDelete = phase.status
+      phase.status = 'deleted'
       phase.deletedAt = now
       phase.deletedBy = 'branch-delete'
       if (busy.includes(phase)) {
@@ -1099,7 +1232,7 @@ async function resolvePhaseSource(project, phase) {
     const project = state.projects[projectId]
     if (project === undefined) return { error: 'project-missing' }
     const branch = branchOf(project, branchId ?? MAIN_BRANCH)
-    if (branch === undefined) return { error: 'branch-missing' }
+    if (branch === undefined) return { error: 'branch-missing', message: 'missing required query parameter: branchId' }
     const record = state.sessions[sessionId]
     if (record === undefined) return { error: 'session-missing' }
     let movedFrom = null
@@ -1135,7 +1268,7 @@ async function resolvePhaseSource(project, phase) {
     if (project === undefined) return { error: 'project-missing' }
     if (branchId === MAIN_BRANCH) return { error: 'cannot-merge-main' }
     const branch = branchOf(project, branchId)
-    if (branch === undefined) return { error: 'branch-missing' }
+    if (branch === undefined) return { error: 'branch-missing', message: 'missing required query parameter: branchId' }
     if (branch.status === 'abandoned') return { error: 'branch-abandoned' }
     const phases = branchPhases(project, branchId)
     if (phases.length === 0) return { error: 'branch-empty' }
@@ -1182,7 +1315,7 @@ async function resolvePhaseSource(project, phase) {
     if (project === undefined) return { error: 'project-missing' }
     if (branchId === MAIN_BRANCH) return { error: 'cannot-unmerge-main' }
     const branch = branchOf(project, branchId)
-    if (branch === undefined) return { error: 'branch-missing' }
+    if (branch === undefined) return { error: 'branch-missing', message: 'missing required query parameter: branchId' }
     if (branch.status !== 'merged') return { error: 'branch-not-merged' }
     const moved = (branch.mergedPhases ?? []).filter((id) => project.phases.some((phase) => phase.id === id && phase.mergedFrom === branchId))
     const movedSet = new Set(moved)
@@ -1212,7 +1345,7 @@ async function resolvePhaseSource(project, phase) {
     if (project === undefined) return { error: 'project-missing' }
     const wanted = branchId ?? project.activeBranchId ?? MAIN_BRANCH
     const branch = branchOf(project, wanted) ?? branchOf(project, MAIN_BRANCH)
-    if (branch === undefined) return { error: 'branch-missing' }
+    if (branch === undefined) return { error: 'branch-missing', message: 'missing required query parameter: branchId' }
     const existing = branchPhases(project, branch.id)
     const now = new Date().toISOString()
     const seq = existing.length + 1
@@ -1465,6 +1598,89 @@ async function resolvePhaseSource(project, phase) {
     return loadErrorDismissedAt !== null && loadErrorDismissedAt === error.at ? null : error
   }
 
+  // ------------------------------------------------- honest reporting (t26 ①②)
+  // 逐会话汇总状态：summarized / never / stale / skipped。
+  // backfill.state='done' 只表示「当前没有候选」，不等于所有会话都汇总过。
+  function sessionSummaryState(record) {
+    if (record.hidden === true) return 'hidden'
+    const summarized = record.lastSummarizedAt !== undefined && record.lastSummarizedAt !== null
+    if (!summarized) return record.state === 'skipped' ? 'skipped' : 'never'
+    if (record.state === 'skipped') return 'skipped'
+    if (record.state === 'error') return 'stale'
+    const dirty = typeof record.dirtyAt === 'string' ? record.dirtyAt : null
+    if (dirty !== null && String(dirty) > String(record.lastSummarizedAt)) return 'stale'
+    return 'summarized'
+  }
+
+  function summaryReport() {
+    const rows = Object.values(state.sessions)
+      .filter((record) => record.hidden !== true)
+      .map((record) => ({
+        sessionId: record.sessionId,
+        projectId: record.projectId ?? null,
+        title: record.title || '未命名会话',
+        branchId: record.branchId ?? MAIN_BRANCH,
+        state: sessionSummaryState(record),
+        recordState: record.state ?? 'new',
+        lastSummarizedAt: record.lastSummarizedAt ?? null,
+        cursorSeq: Number.isFinite(record.cursorSeq) ? record.cursorSeq : -1,
+        updatedAt: record.updatedAt ?? null,
+        lastError: record.lastError ?? null,
+      }))
+      .sort((a, b) => String(b.updatedAt ?? '').localeCompare(String(a.updatedAt ?? '')))
+    const tally = (name) => rows.filter((row) => row.state === name).length
+    const total = rows.length
+    const summarized = tally('summarized')
+    const gaps = rows.filter((row) => row.state === 'never' || row.state === 'stale')
+    return {
+      total,
+      summarized,
+      never: tally('never'),
+      stale: tally('stale'),
+      skipped: tally('skipped'),
+      pending: gaps.length,
+      coverage: total === 0 ? 1 : Number((summarized / total).toFixed(3)),
+      gaps: gaps.slice(0, 40),
+      sessions: rows,
+    }
+  }
+
+  // 问题档案的证据口径（t26 ②）：只有带原话的才算「有证据」。
+  function evidenceReport() {
+    let total = 0
+    let evidenced = 0
+    let open = 0
+    let openInferred = 0
+    for (const project of Object.values(state.projects)) {
+      for (const phase of project.phases ?? []) {
+        if (phase.deletedAt !== undefined && phase.deletedAt !== null) continue
+        for (const problem of Array.isArray(phase.problems) ? phase.problems : []) {
+          total += 1
+          const confidence = problemConfidence(problem)
+          if (confidence === 'evidenced') evidenced += 1
+          if (problem.status === 'open') {
+            open += 1
+            if (confidence === 'inferred') openInferred += 1
+          }
+        }
+      }
+    }
+    // J-01（t28）：`open` 收敛为「有原话」口径，`openAll` 才是旧的含推测口径。
+    // 四处消费方（client 徽标/tooltip、导出、版本对照）统一读 `open`，推测只作为附注展示。
+    return {
+      problems: {
+        total,
+        open: open - openInferred,
+        openAll: open,
+        openEvidenced: open - openInferred,
+        openInferred,
+        evidenced,
+        inferred: total - evidenced,
+      },
+      quoteCoverage: { withQuote: evidenced, withoutQuote: total - evidenced, rate: total === 0 ? 1 : Number((evidenced / total).toFixed(3)) },
+    }
+  }
+
   function buildState() {
     const { list, snap } = visibleProjects()
     const byPath = new Map()
@@ -1492,8 +1708,11 @@ async function resolvePhaseSource(project, phase) {
           createdAt: record.createdAt,
           updatedAt: record.updatedAt,
           state: record.state,
-          summarized: record.state === 'done',
+          summaryState: sessionSummaryState(record),
+          summarized: sessionSummaryState(record) === 'summarized',
           lastSummarizedAt: record.lastSummarizedAt,
+          cursorSeq: Number.isFinite(record.cursorSeq) ? record.cursorSeq : -1,
+          dirtyAt: record.dirtyAt ?? null,
           lastError: record.lastError,
         }))
       return {
@@ -1514,7 +1733,7 @@ async function resolvePhaseSource(project, phase) {
         phases: project.phases
           .filter((phase) => phase.deletedAt === undefined || phase.deletedAt === null)
           .map((phase) => ({
-            ...phaseBrief(phase),
+            ...phaseBrief(phase, project.path),
             current: phase === branchPhases(project, phase.branchId ?? MAIN_BRANCH).slice(-1)[0],
           })),
         trash: project.phases
@@ -1535,19 +1754,33 @@ async function resolvePhaseSource(project, phase) {
         })(),
       }
     })
+    const summary = summaryReport()
     return {
       ok: true,
       generatedAt: new Date().toISOString(),
       projects,
+      summary,
+      evidence: evidenceReport(),
       migration: { available: snap.migration, source: snap.source },
       model: {
-        ready: modelCache !== null,
-        provider: modelCache?.provider ?? state.config.provider,
-        model: modelCache?.model ?? state.config.model,
-        error: modelError,
+        // t26 ④：ready 以「真探活」为准；modelCache 只说明解析到了候选模型。
+        ready: modelProbe?.ok === true,
+        resolved: modelCache !== null,
+        providerState: modelProbe === null ? (modelCache !== null ? 'unverified' : 'unknown') : modelProbe.ok ? 'ok' : 'unreachable',
+        provider: modelProbe?.provider ?? modelCache?.provider ?? state.config.provider,
+        model: modelProbe?.model ?? modelCache?.model ?? state.config.model,
+        error: modelProbe?.error ?? modelError,
+        probe: modelProbe,
+        probeTtlMs: PROBE_TTL_MS,
       },
       config: { ...state.config },
-      backfill: { ...state.backfill },
+      backfill: {
+        ...state.backfill,
+        // done 只表示「没有候选了」；是否真的全量汇总看 summary.coverage / gaps。
+        done: state.backfill.state === 'done',
+        candidates: summary.pending,
+        complete: summary.pending === 0,
+      },
       reproject: reprojectState(),
       summarizing: Object.values(state.sessions)
         .filter((record) => record.state === 'summarizing')
@@ -1555,6 +1788,83 @@ async function resolvePhaseSource(project, phase) {
       beacons: beacons.slice(-12),
       journalError: journalErrorForPanel(),
     }
+  }
+
+  // ------------------------------------------------- write-path guard (t26 ⑥)
+  // 会改状态的路径：除 GET 外也接受 POST（语义正确），但必须同源。
+  const MUTATING_PATHS = [
+    '/api/config',
+    '/api/backfill',
+    '/api/summarize',
+    '/api/migrate',
+    '/api/model-probe',
+    '/api/workspace-create',
+    '/api/workspace-delete',
+    '/api/session-create',
+    '/api/session-prompt',
+    '/api/session-cancel',
+    '/api/session-archive',
+    '/api/session-record',
+    '/api/branch/seed',
+    '/api/branch/attach',
+    '/api/branch/merge',
+    '/api/branch/unmerge',
+    '/api/branch/status',
+    '/api/branch/delete',
+    '/api/phase/create',
+    '/api/phase/rescan',
+    '/api/phase/restore-revision',
+    '/api/phase',
+    '/api/artifact/prune',
+    '/api/problem',
+    '/api/backup',
+    '/api/backup/restore',
+    '/api/journal/dismiss-error',
+    '/api/reproject',
+    '/api/project/delete',
+    '/api/trash',
+    '/api/trash/empty',
+    '/api/consistency/fix',
+  ]
+
+  function isMutatingPath(pathname) {
+    return MUTATING_PATHS.some((suffix) => pathname.endsWith(suffix))
+  }
+
+  /**
+   * 同源校验：浏览器跨站请求一定带 Origin（或 Sec-Fetch-Site: cross-site），
+   * 而本机 curl / CLI 不带这些头，所以「缺头」放行、「头不同源」拒绝。
+   */
+  function crossOriginReason(request) {
+    const header = (name) => {
+      try {
+        return request.headers?.get?.(name) ?? null
+      } catch {
+        return null
+      }
+    }
+    const site = String(header('sec-fetch-site') ?? '').toLowerCase()
+    if (site === 'cross-site' || site === 'same-site') return `Sec-Fetch-Site: ${site}`
+    const hostHeader = String(header('host') ?? '').toLowerCase()
+    const hostName = hostHeader.split(':')[0]
+    const hostPort = hostHeader.split(':')[1] ?? ''
+    const sameHost = (name, port) => {
+      const near = name === hostName || (hostName === 'localhost' && name === '127.0.0.1') || (hostName === '127.0.0.1' && name === 'localhost')
+      return near && (port === '' || hostPort === '' || port === hostPort)
+    }
+    for (const name of ['origin', 'referer']) {
+      const value = header(name)
+      if (value === null || value === '') continue
+      let parsed = null
+      try {
+        parsed = new URL(value)
+      } catch {
+        return `${name} 不是合法 URL：${value.slice(0, 80)}`
+      }
+      const port = parsed.port === '' ? (parsed.protocol === 'https:' ? '443' : '80') : parsed.port
+      if (!sameHost(parsed.hostname.toLowerCase(), port)) return `${name} 与宿主不同源：${parsed.origin}`
+    }
+    return null
   }
 
   // ------------------------------------------------------------------- routes
@@ -1565,6 +1875,15 @@ async function resolvePhaseSource(project, phase) {
       const pathname = url.pathname
       const q = url.searchParams
       const flag = (name) => q.get(name) === '1' || q.get(name) === 'true'
+      // t26 ⑥：写操作必须同源；读操作保持 GET。
+      const method = String(request.method ?? 'GET').toUpperCase()
+      if (isMutatingPath(pathname)) {
+        const rejected = method !== 'GET' && method !== 'POST' ? `method ${method} not allowed` : crossOriginReason(request)
+        if (rejected !== null) {
+          note('写操作被拒', { path: pathname, reason: rejected, method })
+          return json({ ok: false, error: 'cross_origin_rejected', code: 'cross_origin_rejected', detail: rejected }, 403)
+        }
+      }
       try {
         if (pathname.endsWith('/api/health')) {
           let clientGraph = null
@@ -1581,6 +1900,9 @@ async function resolvePhaseSource(project, phase) {
             clientGraph = { error: String(error?.message ?? error) }
           }
           const controller = ctx.get('sessionController')
+          // t26 ④：health 里给一次真探活（60s 缓存、8s 超时、≤16 token）。
+          const probe = await probeModel({ force: flag('probe') })
+          const summary = summaryReport()
           return json({
             ok: true,
             route: routePath,
@@ -1588,6 +1910,18 @@ async function resolvePhaseSource(project, phase) {
             file: FILE,
             clientGraph,
             sessionController: typeof controller?.create === 'function' && typeof controller?.prompt === 'function',
+            model: {
+              ready: probe.ok === true,
+              providerState: probe.providerState,
+              provider: probe.provider,
+              model: probe.model,
+              latencyMs: probe.latencyMs,
+              kind: probe.kind,
+              error: probe.error,
+              probeTtlMs: PROBE_TTL_MS,
+            },
+            summary: { total: summary.total, summarized: summary.summarized, never: summary.never, stale: summary.stale, skipped: summary.skipped, coverage: summary.coverage },
+            evidence: evidenceReport().quoteCoverage,
           })
         }
         if (pathname.endsWith('/api/diagnostics')) {
@@ -1651,9 +1985,18 @@ async function resolvePhaseSource(project, phase) {
           // 回收站里的阶段不是项目进展：导出时必须排除，否则编号错乱、正文混入已删内容。
           const livePhases = project.phases.filter((phase) => phase.deletedAt === undefined || phase.deletedAt === null)
           const deletedCount = project.phases.length - livePhases.length
-          const openProblems = livePhases.reduce((n, phase) => n + (phase.problems ?? []).filter((problem) => problem.status === 'open').length, 0)
+          // J-01（t28）：导出/周报只把「有原话」的问题算未解决；无原话的单独一行给出数量。
+          const openProps = livePhases.flatMap((phase) => (phase.problems ?? []).filter((problem) => problem.status === 'open'))
+          const openEvidenced = openProps.filter((problem) => problemConfidence(problem) === 'evidenced').length
+          const openInferred = openProps.length - openEvidenced
+          // O-1（t30）：推测条目要能按「未解决/已解决」对账。头部原来只数 open 的推测（N 条），
+          // 正文却给所有推测量打同一个 `[推测]`（含已解决的 M-N 条），看起来像一堆待处理事项。
+          // 现在正文分两态标注，头部同时给「未解决 N / 共 M」，两者可直接相加核对。
+          const inferredAll = livePhases.flatMap((phase) => (phase.problems ?? [])).filter((problem) => problemConfidence(problem) === 'inferred')
+          const inferredSolved = inferredAll.length - openInferred
           const deletedNote = deletedCount > 0 ? `（另有 ${deletedCount} 个回收站阶段未导出）` : ''
-          const lines = [`# ${project.title} · 项目进展`, '', `> 导出时间 ${new Date().toISOString()} · 阶段 ${livePhases.length}${deletedNote} · 未解决问题 ${openProblems}`, '']
+          const inferredNote = inferredAll.length > 0 ? ` · 推测 ${openInferred} 条未解决 / 共 ${inferredAll.length} 条（无原话，不计入未解决；其中已解决 ${inferredSolved} 条）` : ''
+          const lines = [`# ${project.title} · 项目进展`, '', `> 导出时间 ${new Date().toISOString()} · 阶段 ${livePhases.length}${deletedNote} · 未解决问题 ${openEvidenced}${inferredNote}`, '']
           const branches = Array.isArray(project.branches) && project.branches.length > 0 ? project.branches : [{ id: 'main', title: '主线', status: 'active' }]
           for (const branch of branches) {
             const phases = livePhases.filter((phase) => (phase.branchId ?? MAIN_BRANCH) === branch.id).sort((left, right) => left.seq - right.seq)
@@ -1663,6 +2006,8 @@ async function resolvePhaseSource(project, phase) {
             for (const phase of phases) {
               index += 1
               lines.push(`### ${index}. ${phase.title}${phase.status === 'done' ? '' : phase.status === 'active' ? '（进行中）' : '（计划中）'}`)
+              // 作者行紧随标题：与面板 PhaseCard 的作者行同一口径（t6 F8）。
+              lines.push('', summaryMetaLine(phase))
               if (typeof phase.summary === 'string' && phase.summary !== '') lines.push('', phase.summary)
               const steps = Array.isArray(phase.nextSteps) ? phase.nextSteps : []
               if (steps.length > 0) lines.push('', '还要做：', ...steps.map((step) => `- ${step}`))
@@ -1671,14 +2016,21 @@ async function resolvePhaseSource(project, phase) {
                 for (const problem of phase.problems) {
                   const quote = typeof problem.quote === 'string' && problem.quote !== '' ? `「${problem.quote}」` : ''
                   const resolution = typeof problem.resolution === 'string' && problem.resolution !== '' ? ` → ${problem.resolution}` : ''
-                  lines.push(`- [${problem.status === 'open' ? '未解决' : '已解决'}] ${problem.statement}${quote}${resolution}`)
+                  // 无原话的标「推测」，并保留解决状态：`[推测·未解决]` / `[推测·已解决]`。
+                  // 已解决的推测不能再显示成待处理，否则与头部「推测 N 条未解决」对不上账。
+                  const inferred = problemConfidence(problem) === 'inferred'
+                  const open = problem.status === 'open'
+                  const tag = inferred ? (open ? '推测·未解决' : '推测·已解决') : open ? '未解决' : '已解决'
+                  lines.push(`- [${tag}] ${problem.statement}${quote}${resolution}`)
                 }
               }
               if (Array.isArray(phase.artifacts) && phase.artifacts.length > 0) lines.push('', `产物：${phase.artifacts.join('、')}`)
               lines.push('')
             }
           }
-          return new Response(lines.join('\n'), { status: 200, headers: { 'content-type': 'text/markdown; charset=utf-8', 'cache-control': 'no-store' } })
+          // 同一文件内可对账：正文三态标签数量与头部数字必须相等。
+          lines.push('---', '', `统计：未解决问题 ${openEvidenced}（有原话）；推测 ${inferredAll.length} 条 = 未解决 ${openInferred} + 已解决 ${inferredSolved}；正文标签 [未解决]×${openEvidenced} / [推测·未解决]×${openInferred} / [推测·已解决]×${inferredSolved}`)
+          return new Response(lines.join('\n') + '\n', { status: 200, headers: { 'content-type': 'text/markdown; charset=utf-8', 'cache-control': 'no-store' } })
         }
         if (pathname.endsWith('/api/beacon')) {
           note(`client:${q.get('e') ?? ''}`, q.get('d') ?? null)
@@ -1687,12 +2039,26 @@ async function resolvePhaseSource(project, phase) {
         if (pathname.endsWith('/api/state')) {
           if (state.backfill.state === 'running') worker()
           else void syncNow()
-          return json(buildState())
+          // 探活 60s 内复用；没有结果时后台补一次，本次响应先如实给 providerState=unknown。
+          if (flag('probe')) await probeModel({ force: true })
+          else if (modelProbe === null) void probeModel()
+          const body = buildState()
+          const etag = stateEtag(body)
+          let ifNoneMatch = null
+          try {
+            ifNoneMatch = request.headers?.get?.('if-none-match') ?? null
+          } catch {}
+          // 内容没变就回 304（无 body）：客户端只更新「最后检查时间」，不再重渲染整棵树。
+          if (etagMatches(ifNoneMatch, etag)) {
+            note('state-not-modified')
+            return new Response(null, { status: 304, headers: { etag, 'cache-control': 'no-store' } })
+          }
+          return json(body, 200, { etag })
         }
         if (pathname.endsWith('/api/model-probe')) {
           modelCache = null
-          const resolved = await resolveModel()
-          return json({ ok: resolved !== null, model: resolved, error: modelError })
+          const probe = await probeModel({ force: true })
+          return json({ ok: probe.ok === true, model: probe, resolved: modelCache, error: probe.error })
         }
         if (pathname.endsWith('/api/config')) {
           const ignored = []
@@ -1735,6 +2101,13 @@ async function resolvePhaseSource(project, phase) {
           const sessionId = q.get('sessionId')
           const record = state.sessions[sessionId]
           if (record === undefined) return json({ error: 'session-missing' }, 404)
+          // retry=1 只对真失败（state==='error'）生效：清重试计数与错误，不动事件游标，
+          // 否则重试会跳过它上次没读到的对话（§14 Q5）。
+          if (flag('retry')) {
+            if (record.state !== 'error') return json({ error: 'not-retryable', state: record.state }, 400)
+            record.attempts = 0
+            record.lastError = null
+          }
           if (flag('force')) record.attempts = 0
           record.state = 'queued'
           if (!queued.has(record.sessionId)) {
@@ -1742,7 +2115,7 @@ async function resolvePhaseSource(project, phase) {
             queue.push(record.sessionId)
           }
           worker()
-          return json({ ok: true })
+          return json({ ok: true, sessionId, retry: flag('retry') })
         }
         if (pathname.endsWith('/api/migrate')) {
           const sessionId = q.get('sessionId')
@@ -1889,6 +2262,36 @@ async function resolvePhaseSource(project, phase) {
           const result = createPhase(q.get('projectId'), q.get('title'), q.get('summary'), q.get('branchId'))
           return json(result, result.error === undefined ? 200 : 400)
         }
+        if (pathname.endsWith('/api/artifact/prune')) {
+          // t26 ③：一键清理「文件已不存在」的产物记录（只删记录，不动磁盘）。
+          const project = state.projects[q.get('projectId')] ?? null
+          if (project === null) return json({ ok: false, error: 'project-missing' }, 404)
+          const phaseOnly = q.get('phaseId') ?? ''
+          const dry = flag('dry')
+          const removed = []
+          const pending = []
+          for (const phase of project.phases) {
+            if (phase.deletedAt !== undefined && phase.deletedAt !== null) continue
+            if (phaseOnly !== '' && phase.id !== phaseOnly) continue
+            const entries = artifactEntries(project.path, phase)
+            if (entries.length === 0) continue
+            const keep = entries.filter((entry) => entry.exists).map((entry) => entry.name)
+            for (const entry of entries) if (!entry.exists) removed.push({ phaseId: phase.id, phaseTitle: phase.title, name: entry.name })
+            if (keep.length !== entries.length) pending.push({ phase, keep })
+          }
+          if (!dry) {
+            for (const item of pending) {
+              item.phase.artifacts = item.keep
+              item.phase.artifactsPrunedAt = new Date().toISOString()
+            }
+          }
+          if (removed.length === 0) return json({ ok: true, removed: 0, items: [], dry })
+          if (dry) return json({ ok: true, dry: true, removed: removed.length, items: removed.slice(0, 40) })
+          project.updatedAt = new Date().toISOString()
+          saveJournal(state)
+          note('产物清理', { projectId: project.id, phaseId: phaseOnly === '' ? null : phaseOnly, removed: removed.length })
+          return json({ ok: true, removed: removed.length, items: removed.slice(0, 40) })
+        }
         if (pathname.endsWith('/api/artifact/open')) {
           const projectId = q.get('projectId') ?? ''
           const name = q.get('name') ?? ''
@@ -1943,6 +2346,107 @@ async function resolvePhaseSource(project, phase) {
           void runReproject(projectId, q.get('rebuild') === '1')
           return json({ ok: true, reproject: reprojectState() })
         }
+        if (pathname.endsWith('/api/phase/revisions')) {
+          // 完整修订历史按需拉（v0.4.0）：/api/state 里每个阶段只带最近 5 条，
+          // 想看全部 20 条时才走这里，避免把 390 KiB 的面板响应再撑大。
+          const projectId = q.get('projectId')
+          const phaseId = q.get('phaseId')
+          if (projectId === null || projectId === '' || phaseId === null || phaseId === '') return json({ error: 'bad-request' }, 400)
+          const project = Object.hasOwn(state.projects, projectId) === true ? state.projects[projectId] : undefined
+          if (project === undefined) return json({ error: 'project-missing' }, 404)
+          const phase = (project.phases ?? []).find((item) => item.id === phaseId)
+          if (phase === undefined) return json({ error: 'phase-missing' }, 404)
+          const all = Array.isArray(phase.revisions) ? phase.revisions : []
+          const revisions = all.slice(-20).map((item) => ({
+            at: item.at,
+            by: typeof item.by === 'string' && item.by !== '' ? item.by : (item.restoredFrom ? 'restore' : 'user'),
+            before: item.before ?? null,
+            after: item.after ?? null,
+            ...(typeof item.restoredFrom === 'string' ? { restoredFrom: item.restoredFrom } : {}),
+          })).reverse()
+          return json({
+            ok: true,
+            projectId,
+            phaseId,
+            revisionLimit: 20,
+            revisionCount: all.length,
+            revisions,
+            summaryMeta: phaseSummaryMeta(phase),
+          })
+        }
+        if (pathname.endsWith('/api/project/orphans')) {
+          // 只读：列出「journal 里有、workspace 里已经没有」的项目记录（幽灵项目）。
+          // 未归属（unassigned）永远不列，避免误删正在收纳散落会话的虚拟项目。
+          // F9：只读接口不能有内存副作用。这里不调 reconcile()（它会就地 ensureProject 补项目），
+          // 只读 workspace 表本身：journal 里有、workspace 里没有的才算孤儿。
+          const snap = workspaceRows()
+          const rows = Array.isArray(snap.rows) ? snap.rows : []
+          const alive = new Set([...(Array.isArray(snap.ids) ? snap.ids : []), ...rows.map((row) => row.id)])
+          const orphans = []
+          for (const project of Object.values(state.projects)) {
+            if (project.id === UNASSIGNED || alive.has(project.id)) continue
+            const sessions = Object.values(state.sessions).filter((record) => record.projectId === project.id)
+            orphans.push({
+              projectId: project.id,
+              title: project.title,
+              path: project.path ?? '',
+              phases: Array.isArray(project.phases) ? project.phases.length : 0,
+              problems: (project.phases ?? []).reduce((total, phase) => total + (Array.isArray(phase.problems) ? phase.problems.length : 0), 0),
+              sessions: sessions.length,
+              branches: Array.isArray(project.branches) ? project.branches.length : 0,
+              updatedAt: project.updatedAt ?? null,
+              deletable: sessions.length === 0 && rows.every((row) => String(row.path ?? '') !== String(project.path ?? '')),
+              frozen: null,
+            })
+          }
+          return json({ ok: true, total: orphans.length, orphans })
+        }
+        if (pathname.endsWith('/api/project/delete')) {
+          // 只删 journal 记录，不碰 workspace 表、不删磁盘目录（v0.4.0，设计 §6.4）。
+          // 两道确认：confirm=1 + 只能是「workspace 里已不存在、且没有归属会话」的项目。
+          if (q.get('confirm') !== '1') return json({ error: 'confirm-required' }, 400)
+          const projectId = q.get('projectId')
+          if (projectId === null || projectId === '') return json({ error: 'bad-request' }, 400)
+          if (projectId === UNASSIGNED) return json({ error: 'reserved-project' }, 400)
+          // F4：projectId 必须是自己举的键。`__proto__`/`constructor` 能顺着原型链取到对象，
+          // 会让「删除」返回 ok:true 还白备份一份，却什么也没删。
+          if (Object.hasOwn(state.projects, projectId) !== true) return json({ error: 'project-missing' }, 404)
+          const snap = reconcile()
+          const project = state.projects[projectId]
+          if (project === undefined) return json({ error: 'project-missing' }, 404)
+          if ((snap.ids ?? []).includes(projectId)) return json({ error: 'project-in-workspace' }, 400)
+          const owns = Object.values(state.sessions).filter((record) => record.projectId === projectId)
+          if (owns.length > 0) return json({ error: 'project-has-sessions' }, 400)
+          const projectPath = String(project.path ?? '')
+          const collides = (snap.rows ?? []).some((row) => {
+            const rowPath = String(row.path ?? '')
+            if (projectPath === '' || rowPath === '') return false
+            return rowPath === projectPath || rowPath.startsWith(`${projectPath}/`) || projectPath.startsWith(`${rowPath}/`)
+          })
+          if (collides) return json({ error: 'project-path-in-workspace' }, 400)
+          const deleted = {
+            projectId,
+            title: project.title,
+            phases: Array.isArray(project.phases) ? project.phases.length : 0,
+            problems: (project.phases ?? []).reduce((total, phase) => total + (Array.isArray(phase.problems) ? phase.problems.length : 0), 0),
+            sessions: owns.length,
+            branches: Array.isArray(project.branches) ? project.branches.length : 0,
+          }
+          let backup = null
+          try {
+            backup = backupJournal('manual')
+          } catch (error) {
+            note('删除项目前备份失败', { projectId, reason: String(error?.message ?? error) })
+            return json({ error: 'backup-failed', detail: String(error?.message ?? error) }, 500)
+          }
+          if (typeof backup !== 'string' || backup === '') return json({ error: 'backup-failed' }, 500)
+          delete state.projects[projectId]
+          if (reproject.projectId === projectId) reproject.projectId = null
+          if (state.backfill.projectId === projectId) state.backfill.projectId = null
+          saveJournal(state)
+          note('已删除幽灵项目记录', { projectId, backup: basename(backup) })
+          return json({ ok: true, deleted, backup: basename(backup) })
+        }
         if (pathname.endsWith('/api/branch')) {
           const projectId = q.get('projectId')
           const phaseId = q.get('phaseId')
@@ -1968,6 +2472,8 @@ async function resolvePhaseSource(project, phase) {
             if (phase.deletedAt !== undefined && phase.deletedAt !== null) {
               delete phase.deletedAt
               delete phase.deletedBy
+              phase.status = typeof phase.statusBeforeDelete === 'string' && phase.statusBeforeDelete !== 'deleted' ? phase.statusBeforeDelete : 'active'
+              delete phase.statusBeforeDelete
               phase.restoredAt = new Date().toISOString()
               restorePhaseArtifacts(project, phase)
               setSessionsHidden(project, phase, false)
@@ -1992,6 +2498,8 @@ async function resolvePhaseSource(project, phase) {
               }
             } else {
               // 软删除：进展记录进回收站，会话与对话历史不动，来源指针保留，可随时恢复。
+              if (typeof phase.status === 'string' && phase.status !== 'deleted') phase.statusBeforeDelete = phase.status
+              phase.status = 'deleted'
               phase.deletedAt = new Date().toISOString()
               phase.deletedBy = 'user'
               phase.trashedArtifacts = trashPhaseArtifacts(project, phase)
@@ -2027,9 +2535,12 @@ async function resolvePhaseSource(project, phase) {
             // 否则展示和真实上下文长期漂移就无从解释。
             const after = { title: phase.title, summary: phase.summary, status: phase.status, nextSteps: Array.isArray(phase.nextSteps) ? [...phase.nextSteps] : [] }
             if (JSON.stringify(before) !== JSON.stringify(after)) {
+              const editedAt = new Date().toISOString()
               phase.revisions = Array.isArray(phase.revisions) ? phase.revisions : []
-              phase.revisions.push({ at: new Date().toISOString(), by: 'user', before, after })
+              phase.revisions.push({ at: editedAt, by: 'user', before, after })
               if (phase.revisions.length > 20) phase.revisions = phase.revisions.slice(-20)
+              // 作者元信息（v0.4.0）：内容真变了才记「人改」，没变（例如只点保存）不冒充一次编辑。
+              phase.summaryMeta = { v: 1, by: 'user', at: editedAt, model: null, provider: null, sessionId: null, seq: null, restoredFrom: null }
             }
           }
           project.updatedAt = new Date().toISOString()
@@ -2150,8 +2661,11 @@ async function resolvePhaseSource(project, phase) {
           phase.nextSteps = Array.isArray(target.before.nextSteps) ? [...target.before.nextSteps] : []
           phase.manual = true
           const after = { title: phase.title, summary: phase.summary, status: phase.status, nextSteps: [...phase.nextSteps] }
-          revisions.push({ at: new Date().toISOString(), by: 'user', before, after, restoredFrom: at })
+          const restoredAt = new Date().toISOString()
+          revisions.push({ at: restoredAt, by: 'restore', before, after, restoredFrom: at })
           phase.revisions = revisions.slice(-20)
+          // 回退也是一次「谁改的」：作者记 restore，并留下回退到的那一版时间戳（§14 Q3）。
+          phase.summaryMeta = { v: 1, by: 'restore', at: restoredAt, model: null, provider: null, sessionId: null, seq: null, restoredFrom: at }
           project.updatedAt = new Date().toISOString()
           saveJournal(state)
           return json({ ok: true, phaseId: phase.id, restoredFrom: at })
@@ -2176,7 +2690,19 @@ async function resolvePhaseSource(project, phase) {
             branchPhases: branchPhasesOnly.map((phase) => ({ id: phase.id, seq: phase.seq, title: phase.title, status: phase.status, nextSteps: Array.isArray(phase.nextSteps) ? phase.nextSteps : [] })),
             mainAfterFork: afterFork.map((phase) => ({ id: phase.id, seq: phase.seq, title: phase.title, status: phase.status })),
             onlyInBranch: branchPhasesOnly.filter((phase) => !afterFork.some((item) => item.id === phase.id)).length,
-            openProblems: { branch: branchProblems.filter((problem) => problem.status === 'open').length, mainAfterFork: mainProblems.filter((problem) => problem.status === 'open').length },
+            // J-01（t28）：与 /api/state、导出同口径（evidenced）；推测数量单列，不与「未解决」混算。
+            openProblems: {
+              branch: branchProblems.filter((problem) => problem.status === 'open' && problemConfidence(problem) === 'evidenced').length,
+              mainAfterFork: mainProblems.filter((problem) => problem.status === 'open' && problemConfidence(problem) === 'evidenced').length,
+            },
+            openProblemsAll: {
+              branch: branchProblems.filter((problem) => problem.status === 'open').length,
+              mainAfterFork: mainProblems.filter((problem) => problem.status === 'open').length,
+            },
+            inferredProblems: {
+              branch: branchProblems.filter((problem) => problem.status === 'open' && problemConfidence(problem) === 'inferred').length,
+              mainAfterFork: mainProblems.filter((problem) => problem.status === 'open' && problemConfidence(problem) === 'inferred').length,
+            },
             branchProblemTitles: branchProblems.filter((problem) => problem.status === 'open').slice(0, 8).map((problem) => problem.statement),
             phaseIds: [...ids],
           })

@@ -15,7 +15,7 @@ window.__ModuleLoader__.load({
     let ReactDOM = null
     try { ReactDOM = require('react-dom') } catch { ReactDOM = null }
     const h = React.createElement
-    const { useState, useEffect, useMemo, useCallback } = React
+    const { useState, useEffect, useMemo, useCallback, useRef } = React
 
     const ROUTES = ['/x-journal', '/x-journal-b', '/x-journal-c', '/x-journal-d']
     let base = null
@@ -88,6 +88,56 @@ window.__ModuleLoader__.load({
       'revision-missing': '找不到这一版修订',
       'record-missing': '记录不存在',
       'project-path-missing': '项目目录不存在',
+      'not-retryable': '这个会话不在失败状态，不需要重试',
+      'confirm-required': '删除需要确认：这是不可撤销的记录操作',
+      'reserved-project': '「未归属会话」是内置容器，不能删除',
+      'project-has-sessions': '项目里还有会话，先把会话迁走再删记录',
+      'project-path-in-workspace': '项目目录仍被工作区里的项目使用，不能删记录',
+      'backup-failed': '删除前的备份没写成，已中止（数据未动）',
+    }
+
+    // ------------------------------------------------------- 纯函数（可直接单测）
+    // 下面三段没有副作用，`test/routes.test.mjs` 的客户端纯函数节直接从本文件抽出源码来跑，
+    // 避免「测试里另抄一份实现」的假覆盖（t6 F3）。
+
+    // C5：条件请求头。只有真的拿到过 ETag 才回传 If-None-Match，否则退化成普通 GET。
+    function conditionalHeaders(lastEtag) {
+      if (typeof lastEtag !== 'string' || lastEtag === '') return {}
+      return { 'If-None-Match': lastEtag }
+    }
+
+    // C8：300 ms 合并窗口。force 永远放行；窗口内且已经发过请求就合并成一次。
+    const REFRESH_WINDOW_MS = 300
+    function shouldCoalesceRefresh(lastAt, now, force) {
+      if (force === true) return false
+      if (typeof lastAt !== 'number' || lastAt <= 0) return false
+      if (typeof now !== 'number') return false
+      return now - lastAt < REFRESH_WINDOW_MS
+    }
+
+    // D4：Esc 分层。函数只返回「该做什么」，调用方负责执行，顺带让层级顺序可被单测锁定。
+    const ESC_LAYERS = [
+      ['settings', (value) => value === true, { settings: false }],
+      ['forkDraft', (value) => value !== null && value !== undefined, { forkDraft: null }],
+      ['confirm', (value) => value !== null && value !== undefined, { confirm: null }],
+      ['editingPhaseId', (value) => value !== null && value !== undefined, { editingPhaseId: null, editingPhaseProjectId: null }],
+      ['editingProblemId', (value) => value !== null && value !== undefined, { editingProblemId: null }],
+      ['attachFor', (value) => value !== null && value !== undefined, { attachFor: null }],
+      ['phaseDraft', (value) => value !== null && value !== undefined, { phaseDraft: null }],
+      ['stepDraft', (value) => value !== null && value !== undefined, { stepDraft: null }],
+      ['renameDraft', (value) => value !== null && value !== undefined, { renameDraft: null }],
+      ['moveSessionId', (value) => value !== null && value !== undefined, { moveSessionId: null }],
+      ['gapsOpen', (value) => value === true, { gapsOpen: false }],
+    ]
+    function decideEscAction(state, inSearch) {
+      if (inSearch === true) {
+        // 搜索框里的 Esc 永远不关面板：有词清词，没词只失焦。
+        return typeof state?.query === 'string' && state.query !== '' ? { clearSearch: true } : { blurSearch: true }
+      }
+      for (const [key, hit, patch] of ESC_LAYERS) {
+        if (hit(state?.[key]) === true) return { patch }
+      }
+      return { closePanel: true }
     }
 
     async function api(path, params) {
@@ -98,8 +148,21 @@ window.__ModuleLoader__.load({
         query.set(key, String(value))
       }
       const suffix = query.toString() === '' ? '' : `?${query.toString()}`
+      // 宿主 webServer 只把 GET 路由到插件 resource（POST 在宿主层就 405），
+      // 所以写操作仍走 GET；跨站防护由服务端 Origin/Referer/Sec-Fetch-Site 同源校验兜底（t26 ⑥）。
       const response = await fetch(`${route}${path}${suffix}`)
-      const payload = await response.json().catch(() => ({}))
+      // 304/204 没有 body；无条件 response.json() 会把「没变化」变成一条错误横幅。
+      let payload = {}
+      if (response.status !== 204 && response.status !== 304) {
+        const text = await response.text()
+        if (text.trim() !== '') {
+          try {
+            payload = JSON.parse(text)
+          } catch {
+            payload = {}
+          }
+        }
+      }
       if (!response.ok) {
         const code = typeof payload?.error === 'string' && payload.error !== '' ? payload.error : `http-${response.status}`
         const message = ERROR_TEXT[code] ?? (typeof payload?.error === 'string' && payload.error !== '' ? `操作失败（${payload.error}）` : `请求失败（HTTP ${response.status}）`)
@@ -116,6 +179,7 @@ window.__ModuleLoader__.load({
     const store = {
       open: false,
       moveSessionId: null,
+      migratePickerOf: null,
       selectedProjectId: null,
       data: null,
       loading: false,
@@ -135,6 +199,12 @@ window.__ModuleLoader__.load({
       renameDraft: null,
       gufaUnderlay: false,
       list: new Set(),
+      // v0.4.0：条件请求与按需面板数据
+      lastEtag: null,
+      failureDismissed: false,
+      revisions: {},
+      orphans: null,
+      stats: { refresh: 0, notModified: 0, coalesced: 0, failed: 0, lastAt: null },
     }
     const subscribers = new Set()
     function emit() {
@@ -149,14 +219,89 @@ window.__ModuleLoader__.load({
       return () => subscribers.delete(fn)
     }
 
-    async function refresh() {
-      setState({ loading: true, error: null })
-      try {
-        const data = await api('/api/state')
-        setState({ data, loading: false })
-      } catch (error) {
-        setState({ loading: false, error: String(error?.message ?? error) })
+    // v0.4.0 C：/api/state 支持 ETag。先看状态码：304 = 内容没变，不解析 body、
+    // 不把一整份 390 KiB 的 data 重新灌进 React 树。
+    async function fetchState() {
+      const route = await ensureBase()
+      // C5：条件请求。带上上一次 200 返回的 ETag，内容没变服务端就回 304，
+      // 客户端连 body 都不读：省的是 390 KiB 的序列化/传输/解析；200 会把新 data 灌进树、
+      // 304 只把 stats 写进 store（两者都会触发一次渲染，差在是否替换数据，别夸大）。
+      const headers = conditionalHeaders(store.lastEtag)
+      const response = await fetch(`${route}/api/state`, { headers, cache: 'no-store' })
+      if (response.status === 304) {
+        return { notModified: true, etag: response.headers.get('etag') ?? store.lastEtag }
       }
+      if (response.status === 204) return { notModified: true, etag: null }
+      const text = await response.text()
+      let payload = null
+      try {
+        payload = JSON.parse(text)
+      } catch {
+        throw new Error(`状态响应不是合法 JSON（HTTP ${response.status}）`)
+      }
+      if (!response.ok) {
+        const code = typeof payload?.error === 'string' && payload.error !== '' ? payload.error : `http-${response.status}`
+        const error = new Error(ERROR_TEXT[code] ?? `请求失败（HTTP ${response.status}）`)
+        error.code = code
+        throw error
+      }
+      return { notModified: false, etag: response.headers.get('etag'), data: payload }
+    }
+
+    let inflight = null
+    let lastRequestAt = 0
+
+    /**
+     * options: { silent, force }
+     *   silent  轮询用：不置 loading（避免整树重渲染），失败也只记 error 不闪加载条
+     *   force   动作后强制重拉：跳过 300 ms 合并窗口与懒加载判断（写操作后必须看到新数据）
+     * 同一时刻只允许一个请求在飞，避免 5s 轮询与手动刷新互相盖结果。
+     */
+    async function refresh(options) {
+      const opts = options === true ? { silent: true } : (options ?? {})
+      const silent = opts.silent === true
+      const force = opts.force === true
+      if (inflight !== null) {
+        // 已经有请求在飞：普通刷新直接复用；动作后的强制刷新先等它落地，再发一次，
+        // 否则刚写入的改动会被「在飞的那次（旧快照）」盖回去，要等下一个 5s 才出现。
+        if (!force) return inflight
+        try { await inflight } catch { /* 在飞那次失败也无所谓，下面会重新拉 */ }
+      }
+      // C8：双击/连点在 300 ms 内只发一次。in-flight 去重挡不住「第一次已经回来、
+      // 第二次在 11 ms 后发出」的真实双击，所以再加一个 leading-edge 合并窗口。
+      if (shouldCoalesceRefresh(lastRequestAt, Date.now(), force) === true) {
+        const merged = { ...store.stats, coalesced: store.stats.coalesced + 1, lastAt: Date.now() }
+        setState({ stats: merged })
+        return store.data
+      }
+      if (!silent) setState({ loading: true, error: null })
+      else if (store.error !== null) setState({ error: null })
+      lastRequestAt = Date.now()
+      inflight = (async () => {
+        const nextStats = { ...store.stats, refresh: store.stats.refresh + 1 }
+        try {
+          const result = await fetchState()
+          if (result.notModified === true) {
+            nextStats.notModified += 1
+            nextStats.lastAt = Date.now()
+            setState({ loading: false, stats: nextStats })
+            return store.data
+          }
+          nextStats.lastAt = Date.now()
+          setState({ data: result.data, loading: false, error: null, lastEtag: result.etag, stats: nextStats })
+          return result.data
+        } catch (error) {
+          nextStats.failed += 1
+          nextStats.lastAt = Date.now()
+          const message = String(error?.message ?? error)
+          // 静默刷新失败不打断正在编辑的人：保留旧数据，只把错误放进横幅。
+          setState({ loading: false, error: message, stats: nextStats, ...(force ? { data: store.data } : {}) })
+          return store.data
+        } finally {
+          inflight = null
+        }
+      })()
+      return inflight
     }
 
     function beacon(message) {
@@ -195,6 +340,17 @@ window.__ModuleLoader__.load({
 
     // 面板根节点只负责阻断冒泡（避免宿主/其它插件挂在 document 上的全局点击处理接走点击），
     // 它不是交互动作，所以不打信标；真正的控件点击都走 act()。
+    // 编辑中/确认中不自动刷新：否则 5 秒一次的 setState 会把正在输入的草稿顶掉。
+    function pollingLocked() {
+      return [store.editingPhaseId, store.editingProblemId, store.phaseDraft, store.stepDraft, store.renameDraft, store.forkDraft, store.confirm, store.attachFor, store.moveSessionId].some((value) => value !== null && value !== undefined)
+    }
+
+    async function retrySummarize(sessionId) {
+      await api('/api/summarize', { sessionId, retry: 1 })
+      setState({ notice: '已重新排队，这次会重新尝试总结' })
+      await refresh({ force: true })
+    }
+
     function stopClickBubble(event) {
       event.stopPropagation()
     }
@@ -212,7 +368,7 @@ window.__ModuleLoader__.load({
       try {
         beacon('panel-open')
         const gufa = gufaOverlayActive()
-        setState({ open: true, error: null, notice: null, gufaUnderlay: gufa, ...(patch ?? {}) })
+        setState({ open: true, error: null, notice: null, failureDismissed: false, gufaUnderlay: gufa, ...(patch ?? {}) })
         if (gufa) beacon('panel-over-gufa')
         refresh()
       } catch (error) {
@@ -235,121 +391,160 @@ window.__ModuleLoader__.load({
     // ----------------------------------------------------------------- styles
 
     const CSS = `
+.pj-root{
+  /* v0.4.0 语义 token 层：规则体只认 --pj-*，深/浅色只在这一层分叉。
+     fallback 用系统色关键字，避免宿主没定义别名时退回「写死的深色」。 */
+  --pj-text:var(--dsw-alias-label-primary,CanvasText);
+  --pj-text-secondary:var(--dsw-alias-label-secondary,CanvasText);
+  --pj-text-tertiary:var(--dsw-alias-label-tertiary,GrayText);
+  --pj-border:var(--dsw-alias-border-l,GrayText);
+  --pj-border-l1:var(--dsw-alias-border-l1,GrayText);
+  --pj-border-strong:var(--dsw-alias-border-l2,GrayText);
+  --pj-surface:var(--dsw-alias-bg-base,Canvas);
+  --pj-surface-raise:var(--dsw-alias-bg-layer-1,Canvas);
+  --pj-surface-sunken:var(--dsw-alias-bg-l1,Canvas);
+  --pj-surface-sunken-2:var(--dsw-alias-bg-l2,Canvas);
+  --pj-surface-platform:var(--dsw-alias-bg-module-platform,ButtonFace);
+  --pj-hover:var(--dsw-alias-interactive-bg-hover,ButtonFace);
+  --pj-accent:var(--dsw-alias-brand-primary,LinkText);
+  --pj-warn:var(--dsw-alias-state-warn-primary,Mark);
+  --pj-success:var(--dsw-alias-state-success-primary,ButtonText);
+  --pj-danger:var(--dsw-alias-state-error-primary,ButtonText);
+  --pj-label-warning:var(--dsw-alias-warning,Mark);
+  --pj-on-accent:var(--dsw-alias-label-on-brand,ButtonText);
+  --pj-on-warn:ButtonText;
+}
 .pj-root{position:fixed;inset:0;z-index:2147483640;pointer-events:auto;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.5)}
-.pj-panel{width:min(1180px,94vw);height:min(780px,90vh);display:flex;flex-direction:column;border-radius:14px;overflow:hidden;background:var(--dsw-alias-bg-base,#191919);color:var(--dsw-alias-label-primary,#f2f2f2);border:1px solid var(--dsw-alias-border-l,#333);box-shadow:0 24px 80px rgba(0,0,0,.55);font-size:13px}
-.pj-head{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--dsw-alias-border-l,#2c2c2c)}
+.pj-panel{width:min(1180px,94vw);height:min(780px,90vh);display:flex;flex-direction:column;border-radius:14px;overflow:hidden;background:var(--pj-surface);color:var(--pj-text);border:1px solid var(--pj-border);box-shadow:0 24px 80px rgba(0,0,0,.55);font-size:13px}
+.pj-head{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--pj-border)}
 .pj-title{font-size:14px;font-weight:600}
-.pj-sub{color:var(--dsw-alias-label-tertiary,#8a8a8a);font-size:12px}
+.pj-sub{color:var(--pj-text-tertiary);font-size:12px}
 .pj-spacer{flex:1}
-.pj-btn{appearance:none;border:1px solid var(--dsw-alias-border-l,#3a3a3a);background:var(--dsw-alias-interactive-bg-hover,#242424);color:inherit;border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer;line-height:1.4}
-.pj-btn:hover{background:var(--dsw-alias-bg-layer-1,#2d2d2d)}
-.pj-btn.primary{background:var(--dsw-alias-brand-primary,#4c6ef5);border-color:transparent;color:#fff}
+.pj-btn{appearance:none;border:1px solid var(--pj-border);background:var(--pj-hover);color:inherit;border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer;line-height:1.4}
+.pj-btn:hover{background:var(--pj-surface-raise)}
+.pj-btn.primary{background:var(--pj-accent);border-color:transparent;color:var(--pj-on-accent)}
 .pj-btn.ghost{background:transparent}
 .pj-btn:disabled{opacity:.5;cursor:default}
 .pj-body{flex:1;display:flex;min-height:0}
-.pj-left{width:250px;border-right:1px solid var(--dsw-alias-border-l,#2c2c2c);overflow:auto;padding:8px}
+.pj-left{width:250px;border-right:1px solid var(--pj-border);overflow:auto;padding:8px}
 .pj-proj{padding:9px 10px;border-radius:9px;cursor:pointer;margin-bottom:4px;border:1px solid transparent}
-.pj-proj:hover{background:var(--dsw-alias-interactive-bg-hover,#232323)}
-.pj-proj.active{background:var(--dsw-alias-bg-layer-1,#262626);border-color:var(--dsw-alias-border-l,#3a3a3a)}
-.pj-proj.picked{border-color:var(--dsw-alias-state-warn-primary,#e8a33d);background:rgba(232,163,61,.12)}
+.pj-proj:hover{background:var(--pj-hover)}
+.pj-proj.active{background:var(--pj-surface-raise);border-color:var(--pj-border)}
+.pj-proj.picked{border-color:var(--pj-warn);background:color-mix(in srgb,var(--pj-warn) 12%,transparent)}
 .pj-proj-title{font-weight:600;font-size:12.5px;display:flex;align-items:center;gap:6px}
-.pj-proj-next{color:var(--dsw-alias-brand-primary,#7aa2ff)}
-.pj-proj-meta{color:var(--dsw-alias-label-tertiary,#8a8a8a);font-size:11px;margin-top:3px;display:flex;gap:8px;flex-wrap:wrap}
-.pj-dot{width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-state-warn-primary,#e8a33d);display:inline-block}
+.pj-proj-next{color:var(--pj-accent)}
+.pj-proj-meta{color:var(--pj-text-tertiary);font-size:11px;margin-top:3px;display:flex;gap:8px;flex-wrap:wrap}
+.pj-dot{width:6px;height:6px;border-radius:50%;background:var(--pj-warn);display:inline-block}
 .pj-main{flex:1;overflow:auto;padding:16px 20px}
-.pj-empty{color:var(--dsw-alias-label-tertiary,#8a8a8a);font-size:12.5px;padding:24px 4px;line-height:1.7}
-.pj-chain{position:relative;margin-left:6px;padding-left:20px;border-left:1px dashed var(--dsw-alias-border-l,#3a3a3a)}
-.pj-phase{position:relative;margin-bottom:14px;padding:12px 14px;border-radius:11px;background:var(--dsw-alias-bg-layer-1,#212121);border:1px solid var(--dsw-alias-border-l,#303030)}
-.pj-phase::before{content:'';position:absolute;left:-26px;top:18px;width:9px;height:9px;border-radius:50%;background:var(--dsw-alias-label-tertiary,#666);border:2px solid var(--dsw-alias-bg-base,#191919)}
-.pj-phase.active::before{background:var(--dsw-alias-state-warn-primary,#e8a33d)}
-.pj-phase.done::before{background:var(--dsw-alias-state-success-primary,#39b980)}
+.pj-empty{color:var(--pj-text-tertiary);font-size:12.5px;padding:24px 4px;line-height:1.7}
+.pj-chain{position:relative;margin-left:6px;padding-left:20px;border-left:1px dashed var(--pj-border)}
+.pj-phase{position:relative;margin-bottom:14px;padding:12px 14px;border-radius:11px;background:var(--pj-surface-raise);border:1px solid var(--pj-border)}
+.pj-phase::before{content:'';position:absolute;left:-26px;top:18px;width:9px;height:9px;border-radius:50%;background:var(--pj-text-tertiary);border:2px solid var(--pj-surface)}
+.pj-phase.active::before{background:var(--pj-warn)}
+.pj-phase.done::before{background:var(--pj-success)}
 .pj-phase-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.pj-seq{font-size:11px;color:var(--dsw-alias-label-tertiary,#8a8a8a);font-variant-numeric:tabular-nums}
+.pj-seq{font-size:11px;color:var(--pj-text-tertiary);font-variant-numeric:tabular-nums}
 .pj-phase-title{font-weight:600;font-size:13.5px}
-.pj-chip{font-size:10.5px;padding:1px 7px;border-radius:999px;border:1px solid var(--dsw-alias-border-l,#3a3a3a);color:var(--dsw-alias-label-secondary,#b5b5b5)}
-.pj-chip.active{color:var(--dsw-alias-state-warn-primary,#e8a33d);border-color:rgba(232,163,61,.5)}
-.pj-chip.done{color:var(--dsw-alias-state-success-primary,#39b980);border-color:rgba(57,185,128,.5)}
-.pj-chip.current{color:var(--dsw-alias-label-primary,#f2f2f2);border-color:var(--dsw-alias-border-l2,#6a6a6a);font-weight:600}
-.pj-phase-summary{margin-top:7px;line-height:1.75;color:var(--dsw-alias-label-secondary,#c9c9c9);white-space:pre-wrap}
+.pj-chip{font-size:10.5px;padding:1px 7px;border-radius:999px;border:1px solid var(--pj-border);color:var(--pj-text-secondary)}
+.pj-chip.active{color:var(--pj-warn);border-color:color-mix(in srgb,var(--pj-warn) 50%,transparent)}
+.pj-chip.done{color:var(--pj-success);border-color:color-mix(in srgb,var(--pj-success) 50%,transparent)}
+.pj-chip.current{color:var(--pj-text);border-color:var(--pj-border-strong);font-weight:600}
+.pj-meta-line{margin-top:4px;font-size:11px;color:var(--pj-text-tertiary)}
+.pj-phase-summary{margin-top:7px;line-height:1.75;color:var(--pj-text-secondary);white-space:pre-wrap}
 .pj-problems{margin-top:9px;display:flex;flex-direction:column;gap:7px}
-.pj-problem{border-left:2px solid var(--dsw-alias-state-warn-primary,#e8a33d);padding:2px 0 2px 9px}
-.pj-problem.open{border-left-color:var(--dsw-alias-state-error-primary,#e5534b)}
+.pj-problem{border-left:2px solid var(--pj-warn);padding:2px 0 2px 9px}
+.pj-problem.open{border-left-color:var(--pj-danger)}
 .pj-problem-st{font-size:12.5px;line-height:1.6}
-.pj-quote{font-size:11.5px;color:var(--dsw-alias-label-tertiary,#9a9a9a);margin-top:3px;font-style:italic;line-height:1.6}
-.pj-res{font-size:12px;color:var(--dsw-alias-label-secondary,#b9b9b9);margin-top:3px;line-height:1.6}
+.pj-quote{font-size:11.5px;color:var(--pj-text-tertiary);margin-top:3px;font-style:italic;line-height:1.6}
+.pj-res{font-size:12px;color:var(--pj-text-secondary);margin-top:3px;line-height:1.6}
 .pj-artifacts{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
-.pj-art-btn{cursor:pointer;border:1px solid var(--dsw-alias-border-l1,#444);background:var(--dsw-alias-bg-l2,#1d1d1d);font:inherit}
-.pj-art-btn:hover{border-color:var(--dsw-alias-brand-primary,#7aa2ff);color:var(--dsw-alias-brand-primary,#7aa2ff)}
+.pj-art-btn{cursor:pointer;border:1px solid var(--pj-border-l1);background:var(--pj-surface-sunken-2);font:inherit}
+.pj-art-btn:hover{border-color:var(--pj-accent);color:var(--pj-accent)}
 .pj-search{width:180px;height:26px;margin-left:8px;font-size:12px}
 .pj-hits{display:flex;flex-direction:column;gap:8px}
-.pj-hit{padding:9px 11px;border-radius:9px;border:1px solid var(--dsw-alias-border-l1,#333);background:var(--dsw-alias-bg-l1,#181818);cursor:pointer}
-.pj-hit:hover{border-color:var(--dsw-alias-brand-primary,#7aa2ff)}
+.pj-hit{padding:9px 11px;border-radius:9px;border:1px solid var(--pj-border-l1);background:var(--pj-surface-sunken);cursor:pointer}
+.pj-hit:hover{border-color:var(--pj-accent)}
 .pj-hit-top{display:flex;gap:8px;align-items:center;margin-bottom:3px}
-.pj-hit-title{font-size:12.5px;font-weight:600;color:var(--dsw-alias-label-primary,#f2f2f2)}
-.pj-hit-text{margin-top:5px;font-size:11.5px;line-height:1.55;color:var(--dsw-alias-label-secondary,#cfcfcf);white-space:pre-wrap}
-.pj-suggest{margin:0 0 10px;padding:9px 11px;border-radius:9px;background:var(--dsw-alias-bg-l2,#1e1e1e);border:1px solid var(--dsw-alias-warning,#8a6d3b)}
-.pj-suggest-h{font-size:11.5px;font-weight:600;color:var(--dsw-alias-warning,#e0b25a);margin-bottom:5px}
-.pj-suggest-row{display:flex;gap:8px;align-items:center;justify-content:space-between;font-size:11.5px;color:var(--dsw-alias-label-secondary,#cfcfcf);padding:2px 0}
+.pj-hit-title{font-size:12.5px;font-weight:600;color:var(--pj-text)}
+.pj-hit-text{margin-top:5px;font-size:11.5px;line-height:1.55;color:var(--pj-text-secondary);white-space:pre-wrap}
+.pj-suggest{margin:0 0 10px;padding:9px 11px;border-radius:9px;background:var(--pj-surface-sunken-2);border:1px solid var(--pj-label-warning)}
+.pj-suggest-h{font-size:11.5px;font-weight:600;color:var(--pj-label-warning);margin-bottom:5px}
+.pj-suggest-row{display:flex;gap:8px;align-items:center;justify-content:space-between;font-size:11.5px;color:var(--pj-text-secondary);padding:2px 0}
 .pj-suggest-text{flex:1;word-break:break-all}
-.pj-nextbar{margin:0 0 10px;padding:9px 11px;border-radius:9px;background:linear-gradient(180deg,var(--dsw-alias-bg-l2,#1e1e1e),var(--dsw-alias-bg-l1,#181818));border:1px solid var(--dsw-alias-border-l1,#333)}
-.pj-nextbar-h{font-size:11.5px;font-weight:600;color:var(--dsw-alias-label-primary,#f2f2f2);margin-bottom:5px}
-.pj-next{margin-top:9px;padding:7px 9px;border-radius:8px;background:var(--dsw-alias-bg-l2,#1d1d1d);border:1px solid var(--dsw-alias-border-l1,#333)}
-.pj-next-h{font-size:11px;color:var(--dsw-alias-label-tertiary,#a0a0a0);margin-bottom:4px}
-.pj-next-item{display:flex;align-items:flex-start;gap:6px;font-size:12px;line-height:1.55;color:var(--dsw-alias-label-secondary,#cfcfcf)}
-.pj-next-dot{color:var(--dsw-alias-brand-primary,#7aa2ff)}
+.pj-nextbar{margin:0 0 10px;padding:9px 11px;border-radius:9px;background:linear-gradient(180deg,var(--pj-surface-sunken-2),var(--pj-surface-sunken));border:1px solid var(--pj-border-l1)}
+.pj-nextbar-h{font-size:11.5px;font-weight:600;color:var(--pj-text);margin-bottom:5px}
+.pj-next{margin-top:9px;padding:7px 9px;border-radius:8px;background:var(--pj-surface-sunken-2);border:1px solid var(--pj-border-l1)}
+.pj-next-h{font-size:11px;color:var(--pj-text-tertiary);margin-bottom:4px}
+.pj-next-item{display:flex;align-items:flex-start;gap:6px;font-size:12px;line-height:1.55;color:var(--pj-text-secondary)}
+.pj-next-dot{color:var(--pj-accent)}
 .pj-next-text{flex:1;word-break:break-word}
 .pj-next-x{padding:0 4px;font-size:11px;line-height:1.2;opacity:.55}
 .pj-next-x:hover{opacity:1}
-.pj-art{font-size:11px;padding:1px 6px;border-radius:5px;background:var(--dsw-alias-bg-module-platform,#2a2a2a);color:var(--dsw-alias-label-tertiary,#a0a0a0);font-family:ui-monospace,monospace}
+.pj-art{font-size:11px;padding:1px 6px;border-radius:5px;background:var(--pj-surface-platform);color:var(--pj-text-tertiary);font-family:ui-monospace,monospace}
+.pj-art-missing{opacity:.5;text-decoration:line-through;border:1px dashed var(--pj-warn)}
+.pj-art-prune{font-size:10.5px;margin-left:4px}
+.pj-warn{color:var(--pj-warn)}
+.pj-failures{margin-top:6px}
+.pj-gaps{margin:6px 10px 0;font-size:11.5px;line-height:1.7}
+.pj-gap-head{font-weight:600;margin-bottom:2px}
+.pj-gap-list{max-height:160px;overflow:auto}
+.pj-gap-row{display:flex;gap:8px;justify-content:space-between;border-bottom:1px dashed color-mix(in srgb,var(--pj-text) 8%,transparent);padding:1px 0}
+.pj-gap-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:150px}
+.pj-inferred{margin-top:6px;border-top:1px dashed color-mix(in srgb,var(--pj-text) 10%,transparent);padding-top:4px}
+.pj-inferred-head{font-size:11px}
+.pj-inferred-list{margin-top:4px;opacity:.8}
+.pj-problem.inferred{border-left-color:var(--pj-text-tertiary)}
 .pj-phase-actions{display:flex;gap:6px;margin-top:9px;opacity:.85}
-.pj-input,.pj-area{width:100%;box-sizing:border-box;background:var(--dsw-alias-bg-base,#141414);color:inherit;border:1px solid var(--dsw-alias-border-l,#3a3a3a);border-radius:7px;padding:6px 8px;font-size:12.5px;font-family:inherit;line-height:1.55}
+.pj-input,.pj-area{width:100%;box-sizing:border-box;background:var(--pj-surface);color:inherit;border:1px solid var(--pj-border);border-radius:7px;padding:6px 8px;font-size:12.5px;font-family:inherit;line-height:1.55}
 .pj-area{resize:vertical;min-height:64px}
 .pj-form{display:flex;flex-direction:column;gap:7px;margin-top:9px}
 .pj-row{display:flex;gap:7px;align-items:center}
-.pj-banner{padding:8px 16px;background:rgba(232,163,61,.14);border-bottom:1px solid rgba(232,163,61,.35);font-size:12.5px;display:flex;gap:10px;align-items:center}
-.pj-trash{margin-top:14px;border-top:1px dashed var(--dsw-alias-border-l2,#4a4a4a);padding-top:8px}
-.pj-trash-toggle{background:transparent;border:0;color:var(--dsw-alias-label-secondary,#b4b4b4);font-size:11.5px;cursor:pointer;padding:2px 0}
-.pj-trash-row{display:flex;gap:8px;align-items:center;padding:4px 0;font-size:11.5px;color:var(--dsw-alias-label-secondary,#b4b4b4)}
-.pj-trash-title{color:var(--dsw-alias-label-primary,#f2f2f2)}
-.pj-revs{margin-top:10px;border-top:1px solid var(--dsw-alias-border-l2,#3a3a3a);padding-top:8px;max-height:230px;overflow:auto}
-.pj-rev{border:1px solid var(--dsw-alias-border-l2,#3a3a3a);border-radius:8px;padding:6px 8px;margin-bottom:6px}
+.pj-banner{padding:8px 16px;background:color-mix(in srgb,var(--pj-warn) 14%,transparent);border-bottom:1px solid color-mix(in srgb,var(--pj-warn) 35%,transparent);font-size:12.5px;display:flex;gap:10px;align-items:center}
+.pj-trash{margin-top:14px;border-top:1px dashed var(--pj-border-strong);padding-top:8px}
+.pj-trash-toggle{background:transparent;border:0;color:var(--pj-text-secondary);font-size:11.5px;cursor:pointer;padding:2px 0}
+.pj-trash-row{display:flex;gap:8px;align-items:center;padding:4px 0;font-size:11.5px;color:var(--pj-text-secondary)}
+.pj-trash-title{color:var(--pj-text)}
+.pj-revs{margin-top:10px;border-top:1px solid var(--pj-border-strong);padding-top:8px;max-height:230px;overflow:auto}
+.pj-rev{border:1px solid var(--pj-border-strong);border-radius:8px;padding:6px 8px;margin-bottom:6px}
 .pj-rev-head{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
-.pj-rev-time{font-size:11px;color:var(--dsw-alias-label-tertiary,#a0a0a0)}
-.pj-rev-body{font-size:12px;color:var(--dsw-alias-label-secondary,#c8c8c8);margin-top:4px;line-height:1.5}
+.pj-rev-time{font-size:11px;color:var(--pj-text-tertiary)}
+.pj-rev-body{font-size:12px;color:var(--pj-text-secondary);margin-top:4px;line-height:1.5}
 .pj-filters{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:8px 0}
-.pj-filter{cursor:pointer;border:1px solid var(--dsw-alias-border-l1,#444);background:transparent}
-.pj-filter.on{border-color:var(--dsw-alias-brand-primary,#7aa2ff);color:var(--dsw-alias-brand-primary,#7aa2ff)}
-.pj-note{font-size:11px;color:var(--dsw-alias-label-tertiary,#a0a0a0);margin-left:8px}
-.pj-notice{padding:8px 16px;background:rgba(57,185,128,.14);color:var(--dsw-alias-state-success-primary,#7ee0b0);font-size:12px;display:flex;gap:12px;align-items:center;justify-content:space-between}
-.pj-error{padding:8px 16px;background:rgba(229,83,75,.14);color:var(--dsw-alias-state-error-primary,#f0857d);font-size:12px}
-.pj-foot{padding:7px 16px;border-top:1px solid var(--dsw-alias-border-l,#2c2c2c);color:var(--dsw-alias-label-tertiary,#8a8a8a);font-size:11px;display:flex;gap:14px;flex-wrap:wrap;align-items:center}
-.pj-settings{position:absolute;right:18px;top:56px;width:340px;background:var(--dsw-alias-bg-base,#1c1c1c);border:1px solid var(--dsw-alias-border-l,#3a3a3a);border-radius:11px;padding:14px;box-shadow:0 16px 40px rgba(0,0,0,.5);z-index:5;display:flex;flex-direction:column;gap:9px}
-.pj-label{font-size:11px;color:var(--dsw-alias-label-tertiary,#8a8a8a);margin-bottom:-4px}
+.pj-filter{cursor:pointer;border:1px solid var(--pj-border-l1);background:transparent}
+.pj-filter.on{border-color:var(--pj-accent);color:var(--pj-accent)}
+.pj-note{font-size:11px;color:var(--pj-text-tertiary);margin-left:8px}
+.pj-notice{padding:8px 16px;background:color-mix(in srgb,var(--pj-success) 14%,transparent);color:var(--pj-success);font-size:12px;display:flex;gap:12px;align-items:center;justify-content:space-between}
+.pj-error{padding:8px 16px;background:color-mix(in srgb,var(--pj-danger) 14%,transparent);color:var(--pj-danger);font-size:12px}
+.pj-foot{padding:7px 16px;border-top:1px solid var(--pj-border);color:var(--pj-text-tertiary);font-size:11px;display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+.pj-settings{position:absolute;right:18px;top:56px;width:340px;background:var(--pj-surface);border:1px solid var(--pj-border);border-radius:11px;padding:14px;box-shadow:0 16px 40px rgba(0,0,0,.5);z-index:5;display:flex;flex-direction:column;gap:9px}
+.pj-label{font-size:11px;color:var(--pj-text-tertiary);margin-bottom:-4px}
 .pj-icon{width:16px;height:16px;display:block}
-.pj-entry{appearance:none;border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary,#b5b5b5);border-radius:8px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;padding:4px 7px;font-size:12px;line-height:1}
-.pj-entry:hover{background:var(--dsw-alias-interactive-bg-hover,#262626);color:var(--dsw-alias-label-primary,#eee)}
-.pj-rowbtn{appearance:none;border:none;background:transparent;color:var(--dsw-alias-label-tertiary,#8a8a8a);border-radius:6px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0}
-.pj-rowbtn:hover{background:var(--dsw-alias-interactive-bg-hover,#2b2b2b);color:var(--dsw-alias-label-primary,#eee)}
-.pj-tabs{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:12px;border-bottom:1px solid var(--dsw-alias-border-l,#2c2c2c);padding-bottom:9px}
-.pj-tab{appearance:none;display:inline-flex;align-items:center;gap:6px;border:1px solid var(--dsw-alias-border-l,#3a3a3a);background:transparent;color:var(--dsw-alias-label-secondary,#b5b5b5);border-radius:8px;padding:4px 9px;font-size:12px;cursor:pointer;line-height:1.5}
-.pj-tab:hover{background:var(--dsw-alias-interactive-bg-hover,#262626)}
-.pj-tab.active{background:var(--dsw-alias-bg-layer-1,#262626);border-color:var(--dsw-alias-brand-primary,#4c6ef5);color:var(--dsw-alias-label-primary,#f2f2f2)}
+.pj-entry{appearance:none;border:1px solid transparent;background:transparent;color:var(--pj-text-secondary);border-radius:8px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;padding:4px 7px;font-size:12px;line-height:1}
+.pj-entry:hover{background:var(--pj-hover);color:var(--pj-text)}
+.pj-rowbtn{appearance:none;border:none;background:transparent;color:var(--pj-text-tertiary);border-radius:6px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0}
+.pj-rowbtn:hover{background:var(--pj-hover);color:var(--pj-text)}
+.pj-tabs{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:12px;border-bottom:1px solid var(--pj-border);padding-bottom:9px}
+.pj-tab{appearance:none;display:inline-flex;align-items:center;gap:6px;border:1px solid var(--pj-border);background:transparent;color:var(--pj-text-secondary);border-radius:8px;padding:4px 9px;font-size:12px;cursor:pointer;line-height:1.5}
+.pj-tab:hover{background:var(--pj-hover)}
+.pj-tab.active{background:var(--pj-surface-raise);border-color:var(--pj-accent);color:var(--pj-text)}
 .pj-tab.abandoned{opacity:.55}
-.pj-tabsrc{font-size:10.5px;color:var(--dsw-alias-label-tertiary,#8a8a8a)}
-.pj-tabcount{font-size:10px;min-width:14px;height:14px;border-radius:999px;background:var(--dsw-alias-bg-module-platform,#2e2e2e);color:var(--dsw-alias-label-tertiary,#a0a0a0);display:inline-flex;align-items:center;justify-content:center;padding:0 4px}
+.pj-tabsrc{font-size:10.5px;color:var(--pj-text-tertiary)}
+.pj-tabcount{font-size:10px;min-width:14px;height:14px;border-radius:999px;background:var(--pj-surface-platform);color:var(--pj-text-tertiary);display:inline-flex;align-items:center;justify-content:center;padding:0 4px}
 .pj-phase.prefix{opacity:.5;background:transparent;border-style:dashed}
-.pj-phase.prefix::before{background:var(--dsw-alias-label-tertiary,#555)}
-.pj-prefix-note{font-size:11px;color:var(--dsw-alias-label-tertiary,#8a8a8a);margin-bottom:6px}
+.pj-phase.prefix::before{background:var(--pj-text-tertiary)}
+.pj-prefix-note{font-size:11px;color:var(--pj-text-tertiary);margin-bottom:6px}
 .pj-sessions{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
 .pj-chip.session{cursor:pointer;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.pj-chip.redo{color:var(--dsw-alias-state-warn-primary,#e8a33d);border-color:rgba(232,163,61,.5)}
-.pj-chip.abandoned{color:var(--dsw-alias-label-tertiary,#8a8a8a)}
+.pj-chip.redo{color:var(--pj-warn);border-color:color-mix(in srgb,var(--pj-warn) 50%,transparent)}
+.pj-chip.abandoned{color:var(--pj-text-tertiary)}
 .pj-backups{display:flex;flex-direction:column;gap:4px;max-height:220px;overflow:auto;margin-top:4px}
-.pj-backup-row{display:flex;gap:8px;align-items:center;padding:6px 8px;border:1px solid var(--dsw-alias-border-l,#2c2c2c);border-radius:8px}
+.pj-backup-row{display:flex;gap:8px;align-items:center;padding:6px 8px;border:1px solid var(--pj-border);border-radius:8px}
 .pj-modal{position:absolute;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:8}
-.pj-modal-box{width:min(560px,86vw);background:var(--dsw-alias-bg-base,#1c1c1c);border:1px solid var(--dsw-alias-border-l,#3a3a3a);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:10px;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+.pj-modal-box{width:min(560px,86vw);background:var(--pj-surface);border:1px solid var(--pj-border);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:10px;box-shadow:0 20px 60px rgba(0,0,0,.6)}
 .pj-branchbar{display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap}
-.pj-badge{font-size:10px;min-width:15px;height:15px;padding:0 4px;border-radius:999px;background:var(--dsw-alias-state-warn-primary,#e8a33d);color:#1a1a1a;display:inline-flex;align-items:center;justify-content:center;font-weight:600}
+.pj-gap-inline{background:none;border:0;padding:0;cursor:pointer;font:inherit;text-align:left;max-width:46vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pj-inferred-note{font-size:10px;opacity:.75;margin-right:4px}
+.pj-badge{font-size:10px;min-width:15px;height:15px;padding:0 4px;border-radius:999px;background:var(--pj-warn);color:var(--pj-on-warn);display:inline-flex;align-items:center;justify-content:center;font-weight:600}
 `
 
     function ensureStyle() {
@@ -400,10 +595,59 @@ window.__ModuleLoader__.load({
       return Array.isArray(phase.nextSteps) ? phase.nextSteps.length : 0
     }
 
+    // t26 ②：只有带原话的问题才算「有证据」，没有原话的降级为推测，不计入未解决。
+    function confidenceOf(problem) {
+      if (problem?.confidence === 'evidenced' || problem?.confidence === 'inferred') return problem.confidence
+      return typeof problem?.quote === 'string' && problem.quote.trim() !== '' ? 'evidenced' : 'inferred'
+    }
+
+    function evidencedProblems(phase) {
+      return (phase.problems ?? []).filter((problem) => confidenceOf(problem) === 'evidenced')
+    }
+
+    function inferredProblems(phase) {
+      return (phase.problems ?? []).filter((problem) => confidenceOf(problem) === 'inferred')
+    }
+
     function problemOpenCount(project) {
       let count = 0
-      for (const phase of project.phases) for (const problem of phase.problems) if (problem.status === 'open') count += 1
+      for (const phase of project.phases) {
+        for (const problem of evidencedProblems(phase)) if (problem.status === 'open') count += 1
+      }
       return count
+    }
+
+    function inferredOpenCount(project) {
+      let count = 0
+      for (const phase of project.phases) for (const problem of inferredProblems(phase)) if (problem.status === 'open') count += 1
+      return count
+    }
+
+    // J-02（t28）：头部直接点名待汇总会话（标题优先、无标题用 sessionId 末 8 位），超过 3 个折叠。
+    function gapSummaryText(summary) {
+      const gaps = Array.isArray(summary?.gaps) ? summary.gaps : []
+      const pending = summary?.pending ?? gaps.length
+      const label = (row) => {
+        const title = typeof row?.title === 'string' && row.title.trim() !== '' ? row.title.trim() : ''
+        const short = String(row?.sessionId ?? '').slice(-8)
+        return title !== '' && title !== '未命名会话' ? title : `未命名会话·${short}`
+      }
+      const shown = gaps.slice(0, 3).map(label)
+      const rest = pending - shown.length
+      const head = `待汇总 ${pending}`
+      if (shown.length === 0) return head
+      return `${head}：${shown.join(' / ')}${rest > 0 ? ` 另有 ${rest} 个` : ''}`
+    }
+
+    function modelLabel(data) {
+      const model = data?.model ?? null
+      if (model === null) return '模型未知'
+      const name = model.model ?? model.provider ?? '模型'
+      if (model.providerState === 'ok') return `模型 ${name}`
+      if (model.providerState === 'unreachable') return `模型不可达（provider:unreachable）`
+      if (model.providerState === 'unverified') return `模型 ${name}（未探活）`
+      if (model.error) return `模型不可用：${String(model.error).slice(0, 40)}`
+      return '模型未探活'
     }
 
     // ------------------------------------------------------------ entry seats
@@ -412,23 +656,26 @@ window.__ModuleLoader__.load({
       useStore()
       ensureStyle()
       const data = store.data
-      const open = (data?.projects ?? []).reduce(
-        (total, project) => total + project.phases.reduce((sum, phase) => sum + phase.problems.filter((problem) => problem.status === 'open').length, 0),
-        0,
-      )
+      // J-01（t28）：未解决统一读服务端同一字段 `evidence.problems.open`（evidenced 口径），
+      // 推测读 `openInferred`；服务端没给（旧宿主）才回落到本地同口径计算。
+      const evidenceProblems = data?.evidence?.problems
+      const open = Number.isFinite(evidenceProblems?.open) ? evidenceProblems.open : (data?.projects ?? []).reduce((total, project) => total + problemOpenCount(project), 0)
+      const inferred = Number.isFinite(evidenceProblems?.openInferred) ? evidenceProblems.openInferred : (data?.projects ?? []).reduce((total, project) => total + inferredOpenCount(project), 0)
       const nextTotal = (data?.projects ?? []).reduce((total, project) => total + nextCount(project), 0)
       const running = data?.backfill?.state === 'running'
+      const inferredNote = inferred > 0 ? `（另有推测 ${inferred} 条，无原话，不计入未解决）` : ''
       return h(
         'button',
         {
           className: 'pj-entry',
           type: 'button',
-          title: `${open} 个未解决问题 · ${nextTotal} 条下一步`,
+          title: `${open} 个未解决问题${inferredNote} · ${nextTotal} 条下一步`,
           onClick: act('entry-click', () => openPanel()),
         },
         h(Icon),
         props.wide === true ? h('span', null, '进展') : null,
-        open > 0 ? h('span', { className: 'pj-badge' }, String(open)) : nextTotal > 0 ? h('span', { className: 'pj-badge', style: { background: '#3f6f5a', color: '#fff' } }, String(nextTotal)) : running ? h('span', { className: 'pj-badge', style: { background: '#4c6ef5', color: '#fff' } }, '…') : null,
+        open > 0 && props.wide === true && inferred > 0 ? h('span', { className: 'pj-sub pj-inferred-note', title: '无原话的条目按推测处理，不计入未解决；点开面板可看折叠区' }, `含推测 ${inferred}`) : null,
+        open > 0 ? h('span', { className: 'pj-badge' }, String(open)) : nextTotal > 0 ? h('span', { className: 'pj-badge', style: { background: 'var(--pj-success)', color: 'var(--pj-on-accent)' } }, String(nextTotal)) : running ? h('span', { className: 'pj-badge', style: { background: 'var(--pj-accent)', color: 'var(--pj-on-accent)' } }, '…') : null,
       )
     }
 
@@ -501,24 +748,66 @@ window.__ModuleLoader__.load({
       return labels.length === 0 ? ['无变化'] : labels
     }
 
+    const AUTHOR_TEXT = { model: '模型', user: '你', restore: '回退', unknown: '未知' }
+
+    function summaryMetaText(meta) {
+      if (meta === null || meta === undefined) return ''
+      const who = AUTHOR_TEXT[meta.by] ?? '未知'
+      const name = meta.by === 'model' && typeof meta.model === 'string' && meta.model !== '' ? `${who}（${meta.model}）` : who
+      const when = typeof meta.at === 'string' && meta.at !== '' ? new Date(meta.at).toLocaleString() : '时间未知'
+      const inferred = meta.inferred === true ? ' · 旧数据推断' : ''
+      const restored = typeof meta.restoredFrom === 'string' && meta.restoredFrom !== '' ? ` · 回到 ${new Date(meta.restoredFrom).toLocaleString()} 那一版` : ''
+      return `作者：${name} · ${when}${restored}${inferred}`
+    }
+
+    // B1/B2：每张阶段卡都能看出「这段话是谁写的、什么时候写的」。
+    function SummaryMetaLine({ phase }) {
+      const meta = phase?.summaryMeta
+      if (meta === null || meta === undefined) return null
+      const text = summaryMetaText(meta)
+      if (text === '') return null
+      return h('div', { className: 'pj-meta-line', title: '模型自动总结 / 你手改 / 回退到旧版本，都会记在这里；旧数据没有记录时会标注「旧数据推断」' }, text)
+    }
+
     function RevisionList({ project, phase }) {
+      const [loading, setLoading] = useState(false)
       const [busy, setBusy] = useState(null)
-      const revisions = Array.isArray(phase.revisions) ? [...phase.revisions].reverse() : []
-      if (revisions.length === 0) return h('div', { className: 'pj-note', style: { marginTop: 10 } }, '还没有修订历史（保存过一次编辑后才会出现）。')
+      const key = `${project.id}:${phase.id}`
+      const cached = store.revisions[key] ?? null
+      const inline = Array.isArray(phase.revisions) ? [...phase.revisions].reverse() : []
+      // C7/B3：首屏只显示 /api/state 带来的最近 5 条；「查看全部」再单独拉，避免把
+      // 每个阶段的 20 条修订都塞进 390 KiB 的 state。
+      const inlineTotal = Number.isFinite(phase.revisionCount) ? phase.revisionCount : inline.length
+      const revisions = cached === null ? inline.slice(0, 5) : cached.revisions
+      const total = cached === null ? inlineTotal : cached.revisionCount
+      const loadAll = async () => {
+        setLoading(true)
+        try {
+          const payload = await api('/api/phase/revisions', { projectId: project.id, phaseId: phase.id })
+          setState({ revisions: { ...store.revisions, [key]: { revisions: payload.revisions ?? [], revisionCount: payload.revisionCount ?? 0, summaryMeta: payload.summaryMeta ?? null } } })
+        } finally {
+          setLoading(false)
+        }
+      }
       const restore = async (at) => {
         setBusy(at)
         try {
           await api('/api/phase/restore-revision', { projectId: project.id, phaseId: phase.id, at })
-          await refresh()
+          setState({ revisions: { ...store.revisions, [key]: undefined } })
+          await refresh({ force: true })
           setState({ notice: '已回到那一版，本次回退也记了一条修订' })
         } finally {
           setBusy(null)
         }
       }
+      if (revisions.length === 0) return h('div', { className: 'pj-note', style: { marginTop: 10 } }, '还没有修订历史（保存过一次编辑后才会出现）。')
       return h(
         'div',
         { className: 'pj-revs' },
-        h('div', { className: 'pj-note', style: { marginBottom: 4 } }, `修订历史 · 共 ${phase.revisionCount ?? revisions.length} 条，最近 ${revisions.length} 条`),
+        h('div', { className: 'pj-note', style: { marginBottom: 4 } }, `修订历史 · 共 ${total} 条${cached === null && total > revisions.length ? `，先显示最近 ${revisions.length} 条` : ''}`),
+        cached === null && total > revisions.length
+          ? h('button', { className: 'pj-btn ghost', type: 'button', disabled: loading, onClick: act('revision-load-all', loadAll) }, loading ? '读取中…' : `查看全部 ${total} 条`)
+          : null,
         revisions.map((item) =>
           h(
             'div',
@@ -526,7 +815,7 @@ window.__ModuleLoader__.load({
             h('div', { className: 'pj-rev-head' },
               h('span', { className: 'pj-rev-time' }, new Date(item.at).toLocaleString()),
               h('span', { className: 'pj-chip' }, changedLabels(item.before, item.after).join(' / ')),
-              item.restoredFrom ? h('span', { className: 'pj-chip' }, '回退记录') : null,
+              item.by === 'restore' || item.restoredFrom ? h('span', { className: 'pj-chip' }, '回退记录') : null,
             ),
             h('div', { className: 'pj-rev-body' },
               h('div', null, `改前：${item.before?.title ?? ''}`),
@@ -547,7 +836,7 @@ window.__ModuleLoader__.load({
         { className: 'pj-modal', style: { zIndex: 14 }, onMouseDown: (event) => { if (event.target === event.currentTarget) close() } },
         h(
           'div',
-          { className: 'pj-modal-box', style: { width: 'min(680px,92vw)' } },
+          { className: 'pj-modal-box', role: 'dialog', 'aria-modal': 'true', 'aria-label': '编辑阶段', style: { width: 'min(680px,92vw)' } },
           h('div', { className: 'pj-title' }, '编辑阶段'),
           h('div', { className: 'pj-sub', style: { marginBottom: 8 } }, '改的是进展记录本身（会话与对话历史不动），每次保存都会记一条修订历史；改后的标题/总结/下一步会进入后续归纳与开分支的上下文，所以它会实际影响之后的模型判断。'),
           h(PhaseEditor, { project, phase, done: close }),
@@ -572,7 +861,7 @@ window.__ModuleLoader__.load({
         { className: 'pj-modal', style: { zIndex: 15 }, onMouseDown: (event) => { if (event.target === event.currentTarget) done() } },
         h(
           'div',
-          { className: 'pj-modal-box', style: { width: 'min(720px,94vw)' } },
+          { className: 'pj-modal-box', role: 'dialog', 'aria-modal': 'true', 'aria-label': '新建分支', style: { width: 'min(720px,94vw)' } },
           h('div', { className: 'pj-title' }, '分支 vs 主线'),
           error !== null ? h('div', { className: 'pj-error' }, error) : null,
           data === null
@@ -582,7 +871,10 @@ window.__ModuleLoader__.load({
               null,
               h('div', { className: 'pj-sub' }, `${data.branch.title ?? '分支'} · 状态 ${data.branch.status} · 从主线第 ${Number(data.branch.fromSeq)} 阶段之后分叉`),
               h('div', { className: 'pj-rev' },
-                h('div', { className: 'pj-rev-head' }, h('span', { className: 'pj-chip' }, `分支阶段 ${data.branchPhases.length}`), h('span', { className: 'pj-chip' }, `主线后续阶段 ${data.mainAfterFork.length}`), h('span', { className: 'pj-chip' }, `未解决问题 分支 ${data.openProblems.branch} / 主线 ${data.openProblems.mainAfterFork}`)),
+                h('div', { className: 'pj-rev-head' }, h('span', { className: 'pj-chip' }, `分支阶段 ${data.branchPhases.length}`), h('span', { className: 'pj-chip' }, `主线后续阶段 ${data.mainAfterFork.length}`), h('span', { className: 'pj-chip' }, `未解决问题 分支 ${data.openProblems.branch} / 主线 ${data.openProblems.mainAfterFork}`),
+                  (data.inferredProblems?.branch ?? 0) + (data.inferredProblems?.mainAfterFork ?? 0) > 0
+                    ? h('span', { className: 'pj-chip', title: '无原话的条目按推测处理，不计入未解决' }, `推测 分支 ${data.inferredProblems?.branch ?? 0} / 主线 ${data.inferredProblems?.mainAfterFork ?? 0}`)
+                    : null,),
                 data.branchPhases.length === 0 ? h('div', { className: 'pj-note' }, '分支上还没有阶段。') : data.branchPhases.map(row),
               ),
               h('div', { className: 'pj-rev' },
@@ -775,7 +1067,7 @@ window.__ModuleLoader__.load({
       if (backups === null) void loadBackups()
       return h(
         'div',
-        { className: 'pj-settings' },
+        { className: 'pj-settings', role: 'dialog', 'aria-label': '项目进展设置' },
         h('div', { className: 'pj-label' }, '摘要模型 provider / model（留空自动选择）'),
         h('div', { className: 'pj-row' },
           h('input', { className: 'pj-input', value: provider, placeholder: 'provider id', onChange: (event) => setProvider(event.target.value) }),
@@ -815,6 +1107,7 @@ window.__ModuleLoader__.load({
                   ),
                 ),
         ),
+        h(DataHygiene, { data }),
         data?.model?.error ? h('div', { className: 'pj-error', style: { borderRadius: 8 } }, data.model.error) : null,
       )
     }
@@ -822,6 +1115,13 @@ window.__ModuleLoader__.load({
     function PhaseCard({ project, phase, index, onFork }) {
       const [problemDraft, setProblemDraft] = useState(null)
       const [busy, setBusy] = useState(false)
+      const artifacts = Array.isArray(phase.artifactStatus)
+        ? phase.artifactStatus
+        : (phase.artifacts ?? []).map((name) => ({ name, exists: true }))
+      const missingArtifacts = artifacts.filter((entry) => entry.exists !== true)
+      const evidenced = evidencedProblems(phase)
+      const inferred = inferredProblems(phase)
+      const inferredOpen = store.inferredOpen === phase.id
       const remove = () => {
         askConfirm(`把阶段「${phase.title}」移入回收站，并裁剪它的真实上下文？该阶段已登记的产物会移出项目目录（后续会话/检索读不到），相关会话从项目列表隐藏且不再自动归纳；会话日志本身不删。注意：只裁剪登记在「产物」里的文件——如果这个阶段有产出没记进来，先点「重扫产物」补登记。误删可在阶段链底部「已删除」里恢复。`, async () => {
           setBusy(true)
@@ -861,27 +1161,45 @@ window.__ModuleLoader__.load({
           h('span', { className: 'pj-spacer', style: { flex: 1 } }),
           h('span', { className: 'pj-seq' }, timeText(phase.startedAt)),
         ),
+        h(SummaryMetaLine, { phase }),
         phase.summary ? h('div', { className: 'pj-phase-summary' }, phase.summary) : null,
-        phase.artifacts.length > 0
+        artifacts.length > 0
           ? h(
               'div',
               { className: 'pj-artifacts' },
-              phase.artifacts.map((artifact, index) =>
+              artifacts.map((entry, index) =>
                 h(
                   'button',
                   {
-                    className: 'pj-art pj-art-btn',
+                    className: `pj-art pj-art-btn${entry.exists === true ? '' : ' pj-art-missing'}`,
                     type: 'button',
                     key: index,
-                    title: `打开 ${artifact}`,
+                    title: entry.exists === true ? `打开 ${entry.name}` : `${entry.name} 已不存在（文件被移动或删除）`,
                     onClick: act('artifact-open', (event) => {
                       event.stopPropagation()
-                      return openArtifact(project, artifact)
+                      return openArtifact(project, entry.name)
                     }),
                   },
-                  artifact,
+                  entry.name,
                 ),
               ),
+              missingArtifacts.length > 0 && readOnly !== true
+                ? h(
+                    'button',
+                    {
+                      className: 'pj-btn ghost pj-art-prune',
+                      type: 'button',
+                      title: '把这些已不存在的文件从产物记录里移除（只删记录，不动磁盘）',
+                      onClick: act('artifact-prune', async (event) => {
+                        event.stopPropagation()
+                        const result = await api('/api/artifact/prune', { projectId: project.id, phaseId: phase.id })
+                        setState({ notice: `已清理 ${Number(result.removed ?? 0)} 条失效产物记录` })
+                        await refresh()
+                      }),
+                    },
+                    `清理失效 ${missingArtifacts.length}`,
+                  )
+                : null,
             )
           : null,
         phase.status === 'active' && (phase.nextSteps ?? []).length === 0 && readOnly !== true
@@ -921,7 +1239,7 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { className: 'pj-problems' },
-          phase.problems.map((problem) =>
+          evidenced.map((problem) =>
             h(
               'div',
               { className: `pj-problem ${problem.status === 'open' ? 'open' : ''}`, key: problem.id },
@@ -955,6 +1273,37 @@ window.__ModuleLoader__.load({
                   ),
             ),
           ),
+          inferred.length > 0
+            ? h(
+                'div',
+                { className: 'pj-inferred' },
+                h(
+                  'button',
+                  {
+                    className: 'pj-btn ghost pj-inferred-head',
+                    type: 'button',
+                    title: '这些条目没有用户原话（quote），按「推测」处理，不计入未解决',
+                    onClick: act('inferred-toggle', () => setState({ inferredOpen: inferredOpen ? null : phase.id })),
+                  },
+                  `推测 ${inferred.length} 条（未解决 ${inferred.filter((problem) => problem.status === 'open').length} / 已解决 ${inferred.filter((problem) => problem.status !== 'open').length}，无原话，不计入未解决${inferredOpen ? '' : ' · 点开'}）`,
+                ),
+                inferredOpen
+                  ? h(
+                      'div',
+                      { className: 'pj-inferred-list' },
+                      inferred.map((problem) =>
+                        h(
+                          'div',
+                          { className: 'pj-problem inferred', key: problem.id },
+                          h('div', { className: 'pj-problem-st' }, problem.statement),
+                          h('div', { className: 'pj-sub' }, `无原话 · 状态 ${problem.status === 'open' ? '未解决' : '已解决'}`),
+                          problem.resolution ? h('div', { className: 'pj-res' }, `处理：${problem.resolution}`) : null,
+                        ),
+                      ),
+                    )
+                  : null,
+              )
+            : null,
           readOnly ? null : problemDraft === phase.id
             ? h(ProblemForm, { project, phase, done: () => setProblemDraft(null) })
             : h('button', { className: 'pj-btn ghost', type: 'button', style: { alignSelf: 'flex-start', fontSize: 11.5 }, onClick: act('problem-create-open', () => setProblemDraft(phase.id)) }, '+ 补一条问题记录'),
@@ -1088,7 +1437,7 @@ window.__ModuleLoader__.load({
       }
       return h(
         'div',
-        { className: 'pj-suggest', style: { borderColor: '#7a5a2e' } },
+        { className: 'pj-suggest', style: { borderColor: 'var(--pj-label-warning)' } },
         h('div', { className: 'pj-suggest-h' }, `进展记录与真实会话有 ${info.count} 处对不上（多为删除/迁移后的残留指针）`),
         issues.slice(0, 5).map((issue, index) => h('div', { className: 'pj-suggest-row', key: index }, h('span', { className: 'pj-suggest-text' }, label(issue)))),
         h(
@@ -1191,11 +1540,11 @@ window.__ModuleLoader__.load({
         { className: 'pj-modal', onMouseDown: (event) => { if (event.target === event.currentTarget) close() } },
         h(
           'div',
-          { className: 'pj-modal-box' },
+          { className: 'pj-modal-box', role: 'dialog', 'aria-modal': 'true', 'aria-label': '进展记录' },
           h('div', { className: 'pj-title' }, `从「${draft.phaseTitle ?? ''}」开一条重做分支`),
           h('div', { className: 'pj-sub' }, '原来的阶段不会删除；新分支从这一步重新做，进展链里两条线都能看。勾选「承接上下文」时，新会话会继承该阶段结束时的对话历史。代码文件不会被改动。'),
           draft?.isRedo === true
-            ? h('div', { className: 'pj-sub', style: { color: 'var(--dsw-alias-label-warning,#e0a030)' } }, '提示：这是「重做」阶段本身，从这里再开分支会形成二级重做，分支名默认带「重做²」，避免和上一个重做分支同名。')
+            ? h('div', { className: 'pj-sub', style: { color: 'var(--pj-label-warning)' } }, '提示：这是「重做」阶段本身，从这里再开分支会形成二级重做，分支名默认带「重做²」，避免和上一个重做分支同名。')
             : null,
           h('div', { className: 'pj-label' }, '分支名'),
           h('input', { className: 'pj-input', value: title, onChange: (event) => setTitle(event.target.value) }),
@@ -1448,7 +1797,7 @@ window.__ModuleLoader__.load({
         ? null
         : h(
             'div',
-            { className: 'pj-suggest', style: { borderColor: '#3f4a5f' } },
+            { className: 'pj-suggest', style: { borderColor: 'var(--pj-border-strong)' } },
             h('div', { className: 'pj-suggest-h' }, `未归属会话来自 ${groups.length} 个目录（迁进对应项目后才会按项目隔离）`),
             groups.map(([cwd, count]) => h('div', { className: 'pj-suggest-row', key: cwd }, h('span', { className: 'pj-suggest-text' }, `${cwd} · ${count} 个会话`))),
           )
@@ -1481,14 +1830,16 @@ window.__ModuleLoader__.load({
           h('div', { className: 'pj-title' }, project.title),
           h('span', { className: 'pj-sub' }, project.path || '未归属会话'),
           h('span', { className: 'pj-spacer', style: { flex: 1 } }),
-          h('span', { className: 'pj-sub' }, `${project.sessions.length} 会话 · ${mainPhases.length} 阶段 · ${problemOpenCount(project)} 个未解决`),
+          h('span', { className: 'pj-sub' }, `${project.sessions.length} 会话 · ${mainPhases.length} 阶段 · ${problemOpenCount(project)} 个未解决${inferredOpenCount(project) > 0 ? `（含推测 ${inferredOpenCount(project)} 条未计入）` : ''}`),
           h('button', { className: 'pj-btn', type: 'button', onClick: act('reproject-toggle', toggleReproject) }, reprojectLabel),
           repro !== null && repro?.projectId === project.id && repro?.running !== true && typeof repro?.error === 'string' && repro.error !== ''
             ? h('span', { className: 'pj-note' }, repro.error)
             : null,
+          h('button', { className: 'pj-btn ghost', type: 'button', 'aria-expanded': store.migratePickerOf === project.id, onClick: act('migrate-picker-toggle', () => setState({ migratePickerOf: store.migratePickerOf === project.id ? null : project.id })) }, '迁移会话…'),
           h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('phase-create-open', addPhase) }, '新建阶段'),
           h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('export-md', exportMarkdown) }, '导出 MD'),
         ),
+        h(MigratePicker, { project }),
         suggestBar,
         nextBar,
         h(BranchTabs, { project, currentId, onPick: pickBranch }),
@@ -1542,7 +1893,7 @@ window.__ModuleLoader__.load({
         { className: 'pj-modal', style: { zIndex: 12 }, onMouseDown: (event) => { if (event.target === event.currentTarget) setState({ confirm: null }) } },
         h(
           'div',
-          { className: 'pj-modal-box', style: { width: 'min(440px,86vw)' } },
+          { className: 'pj-modal-box', role: 'dialog', 'aria-modal': 'true', 'aria-label': '确认', style: { width: 'min(440px,86vw)' } },
           h('div', { className: 'pj-title' }, '确认操作'),
           h('div', { className: 'pj-sub', style: { lineHeight: 1.7 } }, item.text),
           h(
@@ -1598,7 +1949,7 @@ window.__ModuleLoader__.load({
         { className: 'pj-modal', style: { zIndex: 12 }, onMouseDown: (event) => { if (event.target === event.currentTarget) setState({ attachFor: null }) } },
         h(
           'div',
-          { className: 'pj-modal-box' },
+          { className: 'pj-modal-box', role: 'dialog', 'aria-modal': 'true', 'aria-label': '进展记录' },
           h('div', { className: 'pj-title' }, '把一个已有会话挂到这条分支'),
           h('div', { className: 'pj-sub' }, '挂上后，该会话之后新增的对话会归纳进这条分支的当前阶段；会话原来的阶段归属不变。'),
           others.length > 0
@@ -1674,7 +2025,7 @@ window.__ModuleLoader__.load({
         { className: 'pj-modal', style: { zIndex: 12 }, onMouseDown: (event) => { if (event.target === event.currentTarget) setState({ phaseDraft: null }) } },
         h(
           'div',
-          { className: 'pj-modal-box' },
+          { className: 'pj-modal-box', role: 'dialog', 'aria-modal': 'true', 'aria-label': '进展记录' },
           h('div', { className: 'pj-title' }, '手动新建一个阶段'),
           h('div', { className: 'pj-sub' }, '适合两种场景：会话没被自动归纳出阶段，或你想先记下当前进展。新建后上一个进行中的阶段会置为已完成。'),
           h('div', { className: 'pj-label' }, '阶段标题'),
@@ -1738,15 +2089,138 @@ window.__ModuleLoader__.load({
     // client-v24 (hmr)
     // client-v25 (hmr)：修复面板点击被古法覆盖层劫持（portal 宿主幂等归位 + 控件动作诊断信标）
     // client-v26 (hmr)：补齐剩余点击的 act() 覆盖（回退 / 挂会话 / 分支状态 / 项目与搜索命中），包名公开化 + 中英 locale
+    // B4/B5：失败横幅只统计真的失败（state==='error'）；skipped 单独列原因、不给重试按钮。
+    function FailureBanner({ projects }) {
+      const [busy, setBusy] = useState(null)
+      const failed = []
+      const skipped = []
+      for (const project of projects ?? []) {
+        for (const session of project.sessions ?? []) {
+          if (session.state === 'error') failed.push({ project, session })
+          else if (session.state === 'skipped') skipped.push({ project, session })
+        }
+      }
+      if (store.failureDismissed === true) return null
+      if (failed.length === 0 && skipped.length === 0) return null
+      const retry = async (session) => {
+        setBusy(session.sessionId)
+        try {
+          await retrySummarize(session.sessionId)
+        } catch (error) {
+          setState({ error: String(error?.message ?? error) })
+        } finally {
+          setBusy(null)
+        }
+      }
+      return h(
+        'div',
+        { className: 'pj-notice pj-failures', role: 'status', 'aria-live': 'polite' },
+        h('div', { className: 'pj-gap-head' }, `总结失败的会话 ${failed.length} 个${skipped.length > 0 ? ` · 已跳过 ${skipped.length} 个` : ''}`),
+        failed.slice(0, 5).map(({ project, session }) =>
+          h(
+            'div',
+            { className: 'pj-gap-row', key: session.sessionId },
+            h('span', { className: 'pj-gap-title', title: session.lastError ?? '' }, `${session.title ?? session.sessionId} · ${String(session.sessionId).slice(-8)}`),
+            h('span', { className: 'pj-sub' }, session.lastError ? String(session.lastError).slice(0, 90) : '没记下失败原因'),
+            h('button', { className: 'pj-btn ghost', type: 'button', 'aria-label': `重试总结 ${session.title ?? session.sessionId}`, disabled: busy === session.sessionId, onClick: act('summary-retry', () => retry(session)) }, busy === session.sessionId ? '重试中…' : '重试'),
+          ),
+        ),
+        skipped.length > 0
+          ? h('div', { className: 'pj-sub' }, `已跳过、不会自动重试：${skipped.slice(0, 5).map(({ session }) => `${session.title ?? String(session.sessionId).slice(-8)}（${String(session.lastError ?? '达到重试上限或没有可总结内容').slice(0, 40)}）`).join('；')}`)
+          : null,
+        h('div', { className: 'pj-row' },
+          h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('failure-dismiss', () => setState({ failureDismissed: true })) }, '本次先不显示'),
+        ),
+      )
+    }
+
+    // D7：古法皮肤激活时，项目页头部也常显迁移入口，不依赖会话行 hover。
+    function MigratePicker({ project }) {
+      if (store.migratePickerOf !== project.id) return null
+      const sessions = project.sessions ?? []
+      if (sessions.length === 0) return h('div', { className: 'pj-notice' }, '这个项目还没有可迁移的会话。')
+      return h(
+        'div',
+        { className: 'pj-notice', role: 'group', 'aria-label': '选择要迁移的会话' },
+        h('div', { className: 'pj-gap-head' }, `选择要迁移的会话（共 ${sessions.length} 个），然后点左侧目标项目`),
+        sessions.map((session) =>
+          h(
+            'div',
+            { className: 'pj-gap-row', key: session.sessionId },
+            h('span', { className: 'pj-gap-title', title: session.sessionId }, session.title ?? String(session.sessionId).slice(-8)),
+            h('span', { className: 'pj-sub' }, session.cwd ?? ''),
+            h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('migrate-pick-session', () => setState({ moveSessionId: session.sessionId, migratePickerOf: null })) }, '迁移这个会话'),
+          ),
+        ),
+        h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('migrate-picker-close', () => setState({ migratePickerOf: null })) }, '取消'),
+      )
+    }
+
+    // E2：只读列出「已不在工作区、也不属于未归属」的幽灵项目记录，并允许一条条删记录（不动目录）。
+    function DataHygiene() {
+      const [busy, setBusy] = useState(false)
+      const orphans = store.orphans
+      useEffect(() => {
+        if (orphans !== null) return
+        api('/api/project/orphans')
+          .then((payload) => setState({ orphans: payload }))
+          .catch(() => {})
+      }, [])
+      const remove = (orphan) => {
+        askConfirm(`删除项目记录「${orphan.title}」？只删进展记录（阶段/问题/会话索引），不动项目目录，删前会自动备份 journal。不可撤销。`, async () => {
+          setBusy(true)
+          try {
+            const result = await api('/api/project/delete', { projectId: orphan.projectId, confirm: 1 })
+            setState({ notice: `已删除「${orphan.title}」的记录（备份 ${result.backup}）` })
+            const payload = await api('/api/project/orphans')
+            setState({ orphans: payload })
+            await refresh({ force: true })
+          } catch (error) {
+            setState({ error: String(error?.message ?? error) })
+          } finally {
+            setBusy(false)
+          }
+        })
+      }
+      const list = orphans?.orphans ?? null
+      return h(
+        'div',
+        { className: 'pj-hygiene' },
+        h('div', { className: 'pj-label', style: { marginTop: 8 } }, '数据卫生（孤儿项目记录）'),
+        list === null
+          ? h('div', { className: 'pj-sub' }, '读取中…')
+          : list.length === 0
+            ? h('div', { className: 'pj-sub' }, '没有孤儿项目记录。')
+            : h('div', null, list.map((orphan) =>
+                h('div', { className: 'pj-backup-row', key: orphan.projectId },
+                  h('span', { className: 'pj-sub' }, `${orphan.title} · ${orphan.phases}阶段/${orphan.problems}问题/${orphan.sessions}会话`),
+                  h('span', { className: 'pj-spacer', style: { flex: 1 } }),
+                  orphan.deletable === true
+                    ? h('button', { className: 'pj-btn ghost', type: 'button', disabled: busy, onClick: act('orphan-delete', () => remove(orphan)) }, '删除记录')
+                    : h('span', { className: 'pj-seq' }, Number(orphan.sessions ?? 0) > 0 ? '有会话，先迁走' : '目录在用，不能删'),
+                ),
+              )),
+        h('div', { className: 'pj-sub' }, `本次会话刷新统计：共 ${store.stats.refresh} 次，未变更 ${store.stats.notModified} 次，失败 ${store.stats.failed} 次`),
+      )
+    }
+
     function Panel() {
       useStore()
       ensureStyle()
+      // C3/C4：5 秒一次的条件刷新——页面不可见、正在编辑、或上一次请求还没回来时都不打扰。
       useEffect(() => {
         if (store.open !== true) return undefined
-        const timer = setInterval(() => {
-          refresh().catch(() => {})
-        }, 5000)
-        return () => clearInterval(timer)
+        const tick = () => {
+          try {
+            if (document.visibilityState === 'hidden') return
+          } catch {}
+          if (pollingLocked()) return
+          refresh({ silent: true }).catch(() => {})
+        }
+        const timer = setInterval(tick, 5000)
+        const onVisible = () => { if (document.visibilityState === 'visible') tick() }
+        document.addEventListener('visibilitychange', onVisible)
+        return () => { clearInterval(timer); document.removeEventListener('visibilitychange', onVisible) }
       }, [store.open])
       // 诊断：面板打开后量一次「谁在最上层」，用于排查点击被别的插件浮层接走的问题。
       useEffect(() => {
@@ -1792,6 +2266,64 @@ window.__ModuleLoader__.load({
         const timer = setInterval(tick, 1200)
         return () => clearInterval(timer)
       }, [store.open])
+      // D3/D4：Esc 分层关闭 + Tab 焦点留在面板内；关闭后焦点回到打开前的元素。
+      const panelRef = useRef(null)
+      const returnFocusRef = useRef(null)
+      useEffect(() => {
+        if (store.open !== true) return undefined
+        try { returnFocusRef.current = document.activeElement } catch {}
+        const focusFirst = () => {
+          const root = panelRef.current
+          if (root === null || typeof root.querySelector !== 'function') return
+          const target = root.querySelector('[data-pj-autofocus]') ?? root
+          try { target.focus?.() } catch {}
+        }
+        const timer = setTimeout(focusFirst, 30)
+        const onKey = (event) => {
+          if (event.key === 'Tab') {
+            const root = panelRef.current
+            if (root === null) return
+            const nodes = Array.from(root.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
+              .filter((node) => node.disabled !== true && node.getAttribute?.('aria-hidden') !== 'true')
+            if (nodes.length === 0) return
+            const first = nodes[0]
+            const last = nodes[nodes.length - 1]
+            if (event.shiftKey && (document.activeElement === first || document.activeElement === root)) {
+              event.preventDefault()
+              last.focus()
+            } else if (!event.shiftKey && document.activeElement === last) {
+              event.preventDefault()
+              first.focus()
+            }
+            return
+          }
+          if (event.key !== 'Escape') return
+          // D4：搜索框里的 Esc 归搜索框。document 是 capture 阶段，比输入框自己的
+          // onKeyDown 更早，所以这一支必须写在这里，否则 Esc 会先关掉整个面板。
+          // 有词就先清词并留在搜索框；已经空了就只退出焦点，面板仍然不动。
+          const target = event.target
+          const inSearch = target !== null && typeof target === 'object' && typeof target.closest === 'function' && target.closest('[data-pj-search]') !== null
+          const decision = decideEscAction(store, inSearch)
+          event.preventDefault()
+          event.stopPropagation()
+          if (decision.clearSearch === true || decision.blurSearch === true) {
+            if (decision.clearSearch === true) setState({ query: '' })
+            else { try { target.blur?.() } catch { /* 退出焦点失败不影响面板 */ } }
+            return
+          }
+          if (decision.patch !== undefined && decision.patch !== null) {
+            setState(decision.patch)
+            return
+          }
+          closePanel()
+        }
+        document.addEventListener('keydown', onKey, true)
+        return () => {
+          clearTimeout(timer)
+          document.removeEventListener('keydown', onKey, true)
+          try { returnFocusRef.current?.focus?.() } catch {}
+        }
+      }, [store.open])
       if (store.open !== true) return null
       const data = store.data
       const projects = data?.projects ?? []
@@ -1825,6 +2357,11 @@ window.__ModuleLoader__.load({
         'div',
         {
           className: 'pj-root',
+          ref: panelRef,
+          role: 'dialog',
+          'aria-modal': 'true',
+          'aria-label': '项目进展面板',
+          tabIndex: -1,
           style: { zIndex: 2147483640 },
           // 面板是浮在宿主之上的模态层：阻断冒泡，避免宿主/其它插件挂在 document 上的
           // 全局点击处理（例如古法皮肤的「点哪都进自己的页面」）抢走我们的点击。
@@ -1846,17 +2383,55 @@ window.__ModuleLoader__.load({
             h('input', {
               className: 'pj-input pj-search',
               placeholder: '搜索阶段 / 问题…',
+              'aria-label': '搜索阶段或问题',
+              'data-pj-search': '1',
               value: store.query ?? '',
               onChange: (event) => setState({ query: event.target.value }),
-              onKeyDown: (event) => { if (event.key === 'Escape') setState({ query: '' }) },
+              onKeyDown: (event) => {
+                if (event.key !== 'Escape') return
+                event.stopPropagation()
+                if ((store.query ?? '') !== '') setState({ query: '' })
+              },
             }),
-            h('span', { className: 'pj-sub' }, data?.model?.ready === true ? `模型 ${data.model.model}` : '模型未就绪'),
-            data?.backfill?.state === 'running' ? h('span', { className: 'pj-sub' }, `回填中 ${data.backfill.processed}/${data.backfill.total}`) : null,
+            h('span', { className: 'pj-sub' }, modelLabel(data)),
+            data?.summary
+              ? h('button', {
+                  className: `pj-btn ghost pj-sub${(data.summary.pending ?? 0) > 0 ? ' pj-warn' : ''}`,
+                  type: 'button',
+                  title: '逐会话汇总覆盖率：点开看哪些会话还没汇总',
+                  onClick: act('summary-toggle', () => setState({ gapsOpen: store.gapsOpen !== true })),
+                }, `已汇总 ${data.summary.summarized}/${data.summary.total}`)
+              : null,
+            data?.backfill?.state === 'running'
+              ? h('span', { className: 'pj-sub' }, `回填中 ${data.backfill.processed}/${data.backfill.total}`)
+              : data?.summary && (data.summary.pending ?? 0) > 0
+                ? h(
+                    'button',
+                    {
+                      className: 'pj-sub pj-warn pj-gap-inline',
+                      type: 'button',
+                      title: `待汇总 ${data.summary.pending} 个会话（never ${data.summary.never ?? 0} / stale ${data.summary.stale ?? 0}）；点击展开游标与最近汇总时间`,
+                      onClick: act('summary-toggle', () => setState({ gapsOpen: store.gapsOpen !== true })),
+                    },
+                    gapSummaryText(data.summary),
+                  )
+                : null,
             h('span', { className: 'pj-spacer' }),
-            h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('settings-toggle', () => setState({ settings: store.settings !== true })) }, '设置'),
+            h('button', { className: 'pj-btn ghost', type: 'button', 'aria-pressed': store.settings === true, onClick: act('settings-toggle', () => setState({ settings: store.settings !== true })) }, '设置'),
             h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('refresh', () => refresh()) }, '刷新'),
             h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('close-click', closePanel) }, '关闭'),
           ),
+          store.gapsOpen === true && data?.summary
+            ? h(
+                'div',
+                { className: 'pj-notice pj-gaps' },
+                h('div', { className: 'pj-gap-head' }, `未汇总会话 ${data.summary.pending ?? 0} 个（never ${data.summary.never ?? 0} / stale ${data.summary.stale ?? 0} / skipped ${data.summary.skipped ?? 0}）· 事件游标与最近汇总时间如下`),
+                (data.summary.gaps ?? []).length === 0
+                  ? h('div', { className: 'pj-sub' }, '每个会话都汇总到了最新事件。')
+                  : h('div', { className: 'pj-gap-list' }, (data.summary.gaps ?? []).map((row) => h('div', { className: 'pj-gap-row' }, h('span', { className: 'pj-gap-title', title: row.sessionId }, `${row.title} · ${String(row.sessionId).slice(-8)}`), h('span', { className: 'pj-sub' }, `${row.state === 'never' ? '从未汇总' : '有新事件未汇总'} · 游标 ${row.cursorSeq} · ${row.lastSummarizedAt ?? '—'}`)))),
+                h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('summary-toggle', () => setState({ gapsOpen: false })) }, '收起'),
+              )
+            : null,
           store.settings ? h(Settings, { data, close: () => setState({ settings: false }) }) : null,
           move !== null
             ? h('div', { className: 'pj-banner' }, h('span', null, `迁移会话「${movingSession?.title ?? move}」：在左侧点目标项目（再点一次确认）`), h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('migrate-cancel', () => setState({ moveSessionId: null })) }, '取消'))
@@ -1864,8 +2439,9 @@ window.__ModuleLoader__.load({
           store.gufaUnderlay === true
             ? h('div', { className: 'pj-notice' }, h('span', null, '检测到古法编程覆盖层处于开启状态：本面板已置顶显示在它上面，面板内的点击由本插件处理。'), h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('gufa-hint-dismiss', () => setState({ gufaUnderlay: false })) }, '知道了'))
             : null,
-          store.notice ? h('div', { className: 'pj-notice' }, h('span', null, store.notice), h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('notice-dismiss', () => setState({ notice: null })) }, '知道了')) : null,
-          store.error ? h('div', { className: 'pj-error' }, store.error) : null,
+          store.notice ? h('div', { className: 'pj-notice', role: 'status', 'aria-live': 'polite' }, h('span', null, store.notice), h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('notice-dismiss', () => setState({ notice: null })) }, '知道了')) : null,
+          store.error ? h('div', { className: 'pj-error', role: 'alert' }, store.error) : null,
+          h(FailureBanner, { projects }),
           store.data?.journalError
             ? h(
                 'div',
@@ -1917,7 +2493,9 @@ window.__ModuleLoader__.load({
                     h('span', null, `${project.phases.length} 阶段`),
                     (project.branches ?? []).length > 1 ? h('span', null, `${project.branches.length - 1} 分支`) : null,
                     h('span', null, `${project.sessions.length} 会话`),
-                    problemOpenCount(project) > 0 ? h('span', null, `${problemOpenCount(project)} 未解决`) : null,
+                    problemOpenCount(project) > 0
+                      ? h('span', { title: inferredOpenCount(project) > 0 ? `另有 ${inferredOpenCount(project)} 条推测未计入` : undefined }, `${problemOpenCount(project)} 未解决${inferredOpenCount(project) > 0 ? ` · 含推测 ${inferredOpenCount(project)}` : ''}`)
+                      : null,
                     nextCount(project) > 0 ? h('span', { className: 'pj-proj-next' }, `下一步 ${nextCount(project)}`) : null,
                   ),
                 ),
@@ -1953,7 +2531,7 @@ window.__ModuleLoader__.load({
             setTimeout(() => setState({ error: `面板渲染出错（${label}）：${String(error?.message ?? error).slice(0, 120)}` }), 0)
           }
           // 出错时退化成可读提示，而不是静默空白——否则用户会以为「点了没反应」。
-          return h('div', { className: 'pj-root', style: { padding: 16, fontSize: 12, color: 'var(--dsw-alias-label-warning,#e0a030)' } }, `这块内容渲染失败（${label}），右上角关掉面板再打开可重试。`)
+          return h('div', { className: 'pj-root', style: { padding: 16, fontSize: 12, color: 'var(--pj-label-warning)' } }, `这块内容渲染失败（${label}），右上角关掉面板再打开可重试。`)
         }
       }
     }
@@ -2034,7 +2612,7 @@ window.__ModuleLoader__.load({
         note(`ui-workspace-error:${String(error).slice(0, 60)}`)
       }
       note('client-v26')
-      window.__pjDebug = { open: () => openPanel(), close: () => closePanel(), store }
+      window.__pjDebug = { open: () => openPanel(), close: () => closePanel(), store, stats: () => store.stats }
       const mount = (slot, definition, component) => {
         try {
           ctx.slots.inject(slot, () => ctx.slots.register(definition, component))

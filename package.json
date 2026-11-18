@@ -1,6 +1,6 @@
 {
   "name": "@pawsey0319/dsh-project-journal",
-  "version": "0.2.5",
+  "version": "0.4.0",
   "type": "module",
   "description": "项目进展日志：按项目汇总所有会话的阶段链 + 问题档案，并支持把会话一键迁移到它真正所属的项目",
   "author": "pawsey0319",
@@ -40,6 +40,7 @@
     "journal-store.js",
     "cordis.patch.yml",
     "locale/*.json",
+    "scripts/*",
     "test/*",
     "README.md",
     "LICENSE",
@@ -57,6 +58,10 @@
     }
   },
   "scripts": {
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "check": "node scripts/check-docs.mjs && node scripts/check-act.mjs && node scripts/check-theme.mjs",
+    "check:docs": "node scripts/check-docs.mjs",
+    "check:act": "node scripts/check-act.mjs",
+    "check:theme": "node scripts/check-theme.mjs"
   }
 }

@@ -3,6 +3,104 @@
 本插件的所有重要变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.4.0] - 2026-11-18
+
+并入此前未单独发布的 0.3.0–0.3.2 改动（0.3.3 只存在于未提交的工作树，没有单独发过版），并落地「回来能看懂 / 打开不卡 / 键盘与浅色 / 库要干净」四个方向。
+设计见 `docs/superpowers/specs/2026-11-18-journal-optimization-design.md`，验收逐条对照见 `docs/DEV.md`。
+
+### 新增
+
+- **阶段作者可追溯（B）**：`phase.summaryMeta` 记录这段进展是谁写的、什么时候写的。四态 `by: model|user|restore|unknown`，模型侧还记 `model`/`provider`/`sessionId`/`seq`，回退记 `restoredFrom`。写入点三处：自动归纳（`applySummary`，`manual` 阶段不覆盖）、手改（`/api/phase`，内容真变才写）、回退（`/api/phase/restore-revision`）。旧 journal **不补字段**：读时只计算 `inferred: true` 的兜底（`phaseBrief`），磁盘上不会出现 `summaryMeta`（因此也不升 version）；缺字段时面板与导出都标「旧数据推断」。
+- **阶段卡片作者行**：`SummaryMetaLine` 显示「作者：模型（provider/model） · 时间」或「作者：你」「作者：回退 · 回到 xx 那一版」。
+- **修订历史按需拉取**：面板首屏仍显示 `state` 带来的最近 5 条，「查看全部 N 条」走新增的只读 `GET /api/phase/revisions`（最近 20 条，新→旧）；`state` 体积不因此变大。
+- **失败横幅与重试**：只统计 `state==='error'` 的会话，逐条给「重试」；`skipped` 单独列出原因、不给按钮。`/api/summarize?retry=1` 只对 `error` 生效（清失败计数、不动事件游标），其它状态回 `400 not-retryable`。
+- **孤儿项目记录治理（E）**：只读 `GET /api/project/orphans`（永不列出「未归属」）；`GET /api/project/delete?projectId&confirm=1` 只删 journal 里的项目记录与分支索引，不动项目目录、不碰 workspace 表，删前 `backupJournal('manual')`；七类拒绝（`confirm-required` / `bad-request` / `reserved-project` / `project-in-workspace` / `project-has-sessions` / `project-path-in-workspace` / `project-missing`）。设置抽屉新增「数据卫生」小节。
+- **迁移入口常显（D7）**：项目页头部新增「迁移会话…」，选中会话后再点左侧目标项目，不再依赖会话行 hover。
+- **`npm run check` 三道文档/交互/主题闸门**：`scripts/check-docs.mjs`（README 版本、路由表、act 计数与代码同步；发布包内无 `docs/` 时降级为只校验 README 并 exit 0）、`scripts/check-act.mjs`（onClick 必须包 `act()`、`window.prompt` 为 0、7 类 aria 标记齐全）、`scripts/check-theme.mjs`（规则体直连 `--dsw-alias-*` 为 0、别名后不跟写死 hex fallback）。`npm run check` 串行跑三道，已加入发布前检查；`files[]` 增加 `scripts/*`（发布包 15 个文件）。
+
+### 变更
+
+- **`/api/state` 支持 ETag/304（C）**：响应头带 `ETag`（按顶层 key 增量算 sha1，跳过 `generatedAt`/`beacons`，不做整树深拷贝）；`If-None-Match` 命中回 `304` 且无 body。客户端把上次的 ETag 作为 `If-None-Match` 回传，5 秒轮询先看状态码，304 时零解析、不 setState 数据，只在 `window.__pjDebug.stats` 累加 `notModified`。
+- **轮询改为条件刷新**：页面 `visibilitychange` 到 hidden 暂停、回到 visible 立刻补一次；编辑态（阶段/问题/下一步/分支改名/开分支/确认框/挂载会话/迁移会话）暂停；`refresh()` 做 in-flight 去重 **+ 300 ms 合并窗口**（窗口内重复刷新只记 `stats.coalesced`），后台静默刷新不再置 `loading`（不会每次闪「加载中」），连点「刷新」也只发一次请求。
+- **主题 token 层（D）**：`.pj-root` 定义 19 个 `--pj-*` 语义 token（`text`/`border`/`surface`/`accent`/`warn`/`success`/`danger`/`hover`/`on-accent`…），它们的 fallback 改成系统色关键字（`Canvas`/`CanvasText`/`GrayText`/`ButtonFace`/`LinkText`），规则体 122 处改用 `var(--pj-*)`；硬编码深色 rgba 换成 `color-mix(in srgb, var(--pj-*) N%, transparent)`，内联 `#3f6f5a`/`#4c6ef5`/`#7a5a2e` 等也全部收进 token。
+- **键盘与无障碍（D）**：面板 `role="dialog" aria-modal`，Esc 分层关闭（设置 → 弹层 → 确认 → 阶段编辑 → 问题编辑 → 挂载 → 新建阶段 → 下一步 → 改名 → 迁移 → 面板），搜索框内的 Esc 在 capture 阶段被拦下（有词清词、无词失焦），**不会关掉面板**；Tab 焦点限制在面板内，关闭后焦点回到打开前的元素；通知/错误区加 `aria-live`/`role=alert`，设置与迁移按钮加 `aria-pressed`/`aria-expanded`。
+- **`journal.json` 仍是 version 3**：`summaryMeta` 是可选字段，旧文件读时迁移即可，不升 v4（旧版本读到多出来的字段会自动忽略，降级安全）。
+
+### 修复（独立验收后）
+
+- **真实浏览器拿不到 304**：`fetchState()` 之前只计算 ETag、从不回传 `If-None-Match`，304 分支在真机上是死代码。现在记住 `store.lastEtag` 并在下一次请求带上（`cache: 'no-store'`）；实测面板打开后 30 s 内 6 次请求全部 304、`stats.notModified=6`。
+- **搜索框里按 Esc 会关掉整个面板**：document capture 阶段的 Esc 处理没有识别搜索框，面板级 `stopPropagation` 来不及执行。现在先判 `closest('[data-pj-search]')`：有词只清词、无词只失焦，两种情况都不关面板。
+- **100 ms 双击「刷新」仍发两次请求**：in-flight 去重只能挡住「上一次没回来」。新增 300 ms 合并窗口（`REFRESH_WINDOW_MS`），窗口内只累加 `stats.coalesced`。
+- **`/api/state` p50 6.012 ms 超阈值**（复验 6.15 ms / 450 KB；阈值按设计 §14 Q7 放宽为 p50 ≤ 8 ms，作为已接受偏差）：`stateEtag` 对 400 KiB body 做 `structuredClone` 太贵，改成按顶层 key 增量喂 sha1。采样口径写清楚：t8 真机 40 次采样 p50 5.18 ms，t9 复验 20 次采样 p50 6.152 ms（450 KB body），设计 §14 Q7 因此把阈值放宽到 p50 ≤ 8 ms；304 侧 p50 2.876 ms / body 0 B。
+- **`summaryMeta` 兜底被写进磁盘**：`migrateJournal` 曾在加载时补字段，把加载时刻写成推断时间。现在兜底只在 `phaseBrief` 读期给出，磁盘上不出现该字段（用例断言两次 `loadJournal` 后文件内容不变）。
+- **文档与实现口径再次漂移**：README 备份口径（每类 tag 各 8 份）、未归属会话「是否新增阶段由模型判断」都已对齐实现，并加进 `check-docs` 断言（反向自测：写回旧口径会 FAIL）；`docs/DEV.md` §4.6 硬约束补齐第 15/16 条。
+- **Release 资产名对不上**（已定方案）：`npm pack` 对 `@pawsey0319/…` 产出 `pawsey0319-dsh-project-journal-<版本>.tgz`，而发布资产统一用**去 scope** 的 `dsh-project-journal-<版本>.tgz`——上传前先改名（`gh release upload` 用 basename 作资产名）。README 下载链接用去 scope 名，`check-docs` 第 7 条断言「发布资产名 = pack 名去掉 `pawsey0319-` 前缀」并保留 15 文件断言。
+- **古法皮肤场景记为环境限制**：隔离实例里 gufa bundle 能加载但 DOM 里没有 gufa 节点、插件自报 `gufa-none`，覆盖层无法复现，因此没有写「已验证」；常显迁移入口 + 迁移成功路径已实测（`docs/DEV.md` §4.17.5）。
+
+### 修复（发布前评审 findings 清账，t10）
+
+t6 代码评审 PASS（无 blocker/high）后留下的 9 条 findings 已在发布前清完：
+
+- **F1/D2 文档自相矛盾**：`summaryMeta` 的「读时补齐」表述删掉，统一为「读时只算 `inferred`、磁盘不写字段」——与 `migrateJournal`/`phaseBrief` 的实现一致。
+- **F2 304 收益说法夸大**：304 仍会写一次 `stats` 触发一次轻量重渲，文档与代码注释都改成「省的是序列化 + 网络 + 解析与随之而来的整树重渲」。
+- **F3 客户端行为没有仓库内测试**：抽出 `conditionalHeaders` / `shouldCoalesceRefresh` / `decideEscAction` 三个纯函数，用例并入 `test/routes.test.mjs` 尾部（直接抽 `client.js` 源码执行，并断言三处调用点确实接了纯函数；不另开文件是为了不破坏「发布包 15 个文件」的断言）。
+- **F4 原型链键**：`/api/project/delete` 与 `/api/phase/revisions` 增加 `Object.hasOwn` 校验，`projectId=__proto__`/`constructor` 返回 404 `project-missing`，不返回 `ok`、不写备份。
+- **F5 无作者信息也写 `summaryMeta`**：`applySummary` 只在拿到非空模型名时写字段，否则留空由 `phaseBrief` 读期推断。
+- **F6 采样数字**：p50 同时标注 t8（5.18 ms）与 t9（6.152 ms）两次采样与 8 ms 阈值来源。
+- **F7 测试条数**：`docs/DEV.md` 两处 27/27 改成当前 44/44。
+- **F8 导出没有作者行**：`/api/export` 每个阶段标题下加「作者：模型（model） · ISO 时间 / 作者：你 / 作者：回退 · 回到 … 那一版 / 作者：未知 · 旧数据推断」，与面板 `SummaryMetaLine` 同口径。
+- **F9 只读接口有内存副作用**：`/api/project/orphans` 不再调 `reconcile()`（它会就地 `ensureProject`），改为只读 `workspaceRows()`；并加回归用例锁住「处理块里不出现 `reconcile(`」。
+- **发布资产名（D1）**：README 下载链接、`check-docs` 第 7 条、本文件、`docs/DEV.md` 统一到「pack 用实际名、上传前改名为去 scope 的 `dsh-project-journal-0.4.0.tgz`、README 用去 scope 名」。
+- **`files[]`（D4）**：`docs/DEV.md` 里「12 个文件」改成 15 个并列清单（含 `scripts/*`、两个测试文件）。
+
+### 测试
+
+- `node --test test/*.test.mjs` 44/44（journal-store 20 + routes 24）。新增用例：`phaseBrief` 兜底 `inferred` 且不回写、`migrateJournal` 幂等、`applySummary` 写 `summaryMeta` 且不覆盖 `manual` 阶段；`/api/state` ETag/304、`/api/phase/revisions`（含 400/404）、`/api/project/orphans`、`/api/project/delete`（六类拒绝 + 成功时先备份、只动 journal、workspace.json sha256 不变）；发布前补：导出作者行、`__proto__`/`constructor` 拒绝且不写备份、`orphans` 处理块不调 `reconcile()`、`applySummary` 缺模型名时不写 `summaryMeta`。C5 条件请求头 / C8 300 ms 合并窗口 / D4 Esc 分层三个纯函数做成了可直接单测的纯函数，用例**从 `client.js` 直接抽源码执行**（不是另抄一份实现），并断言三处调用点确实接了纯函数；为守住「发布包 15 个文件」这组用例放在 `test/routes.test.mjs` 尾部，没有另开文件。
+- `node scripts/check-{docs,act,theme}.mjs` 全绿（`docs: ok (44 routes, act 85, version 0.4.0)` / `act: 85 wrapped, 1 allowlisted` / `theme: ok (122 var(--pj-*), 19 tokens)`）。
+- 版本 0.3.2（工作树）→ 0.4.0。
+
+## [0.3.2] - 2026-11-18
+
+修 O-1：导出里的推测条目要能按「未解决/已解决」对账。
+
+### 修复
+
+- **导出正文推测两态**：此前正文对所有无原话的问题统一打 `[推测]`（含已解决的），而头部只数 `status==='open'` 的推测，读者会以为一堆已处理的推断还挂着。现在正文按状态分 `[推测·未解决]` / `[推测·已解决]`，有原话的仍是 `[未解决]` / `[已解决]`。
+- **头部与正文自洽**：头部改为「推测 N 条未解决 / 共 M 条（无原话，不计入未解决；其中已解决 M-N 条）」；导出末尾新增一行「统计」，把头部数字与正文三种标签的计数并排写出（`[未解决]×a / [推测·未解决]×N / [推测·已解决]×M-N`），同一文件即可对账。
+- **面板同步**：PhaseCard 的推测折叠区标题补「未解决 x / 已解决 y」，与导出同一口径。
+
+### 兼容
+
+- 只改呈现与统计口径，不改任何 journal 记录；`open`（evidenced）、`openAll`、`openInferred` 与 `open + openInferred == openAll` 均不变，徽标/tooltip/版本对照数值不动。
+
+## [0.3.1] - 2026-11-18
+
+J-01 + J-02：把「未解决」收敛成单一口径，并让面板头部直接点名待汇总会话。
+
+### 修复
+
+- **J-01 未解决口径分叉**：面板徽标 151（只有原话的）与 tooltip/导出/版本对照 240（含模型推测）同屏并存。`evidenceReport().problems` 现在给 `{ total, open, openAll, openEvidenced, openInferred, evidenced, inferred }`，`open` 收敛为 evidenced 口径，恒有 `open + openInferred == openAll`；侧栏徽标与 tooltip、项目头/项目行、导出、`/api/branch/diff` 四处消费方都读 `open`，推测一律单独计数（tooltip「另有推测 N 条，无原话，不计入未解决」、宽栏徽标「含推测 N」、项目行「含推测 M」、版本对照单独「推测 分支 x / 主线 y」chip）。
+- **J-01 导出侧**：`/api/export` 头部「未解决问题 <evidenced> · 推测 N 条（无原话，未计入未解决）」，正文无原话条目不再写 `[未解决]`；`/api/branch/diff` 的 `openProblems` 改 evidenced 口径，新增 `openProblemsAll` 与 `inferredProblems`。
+- **J-02 缺口不点名**：面板头部原来只有一个「待汇总 N」。新增 `gapSummaryText()`：标题优先、无标题回落 `未命名会话·<sessionId 末 8 位>`，只列前 3 个，其余折叠为「另有 N 个」；仍是按钮，点击展开每条的游标与最近汇总时间。
+
+## [0.3.0] - 2026-11-18
+
+可信度整修：面板不再「看起来完成了其实没做」。对应 `docs/verify/journal-panel-review.md` 的六条问题。
+
+### 修复
+
+- **回填诚实化**：`/api/state` 新增 `summary{total,summarized,never,stale,skipped,pending,coverage,gaps}` 与逐会话 `summaryState`（`summarized|never|stale|skipped`，附 `cursorSeq`、`lastSummarizedAt`、`dirtyAt`）；面板头部显示「已汇总 X/Y」，点开列出 never/stale 缺口，`state:'done'` 不再作为「已汇总」的等价物；`backfill` 增 `done/candidates/complete`，历史会话（cursor 为 -1 或停在旧游标）会被重新列为候选，不再因 `backfill.state==='done'` 被永久跳过。
+- **引文强制与 inferred 口径**：prompt 明确「problems 每一项都必须带 quote（用户原话片段），没有原话就不要输出这一项——推测内容不允许写进 problems」；存储层新增 `problemConfidence()`（有原话 evidenced、无原话 inferred），`/api/state` 给 `evidence{problems{...}, quoteCoverage}`；面板把无原话条目移出主列表、收进「推测 N 条（无原话，不计入未解决）」折叠区，不再计入未解决。
+- **产物失效可见可清**：`phaseBrief()` 增 `artifactStatus:[{name,path,exists}]`，面板把不存在的产物置灰加删除线，并给「清理失效 N」按钮（`/api/artifact/prune`，支持 `dry=1` 只统计）；导出仍列记录，但不再假装文件都在。
+- **真探活取代假 ready**：`model.ready` 不再是「进程内有没有缓存」，而是真调一次 provider（`/api/model-probe`，`maxTokens:8`，8s 超时，成功缓存 60s）；`providerState` 区分 `ok|unreachable|unverified|unknown`，超时与不可达分别给出原因，面板如实显示「模型不可达（provider:unreachable）」而不是「未就绪」。
+- **软删收口**：删除阶段在存储层写 `status:'deleted'` + `deletedAt` + `statusBeforeDelete`（恢复时还原原状态），不再只靠 `deletedAt` 过滤；旧 journal.json 读入时自动归一（有 `deletedAt` 没 `status` 的补 `deleted`，反之回滚），迁移幂等且保留原始字段。
+- **CSRF 同源校验**：写路径（config/backfill/summarize/branch/phase/problem/artifact/trash/backup/migrate 等）在资源入口校验来源——`sec-fetch-site: cross-site|same-site` 直接拒，`Origin`/`Referer` 的 host:port 必须等于 `Host`（`localhost` 与 `127.0.0.1` 互认），缺头放行（curl 本机脚本不受影响）；拒绝时 403 `{ok:false,error:'cross_origin_rejected'}` 并记 note「写操作被拒」。
+
+### 测试
+
+- `node --test test/*.test.mjs` 27/27（store 16 + routes 11）；隔离 harness 覆盖 health/state/export/prune/CSRF 与旧 journal.json 读时归一。
+- 版本 0.2.5 → 0.3.0。
+
 ## [0.2.5] - 2026-11-18
 
 补掉 R1，并把分发方式从 npm 改为 GitHub Release（npm 侧有 2FA / 组织策略限制，本项目不为此开例外）。
