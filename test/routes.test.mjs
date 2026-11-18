@@ -543,6 +543,10 @@ test('D4 decideEscAction：搜索框里的 Esc 永远不关面板', () => {
 })
 
 test('D4 decideEscAction：层级顺序固定（设置 → 弹层 → 确认 → 编辑 → 其它 → 面板）', () => {
+  // 0.5.0：右栏翻到设置/回收站/数据卫生页时，Esc 先回「阶段检视」，再一下才关面板。
+  assert.deepEqual(decideEscAction({ panePage: 'settings' }, false), { patch: { panePage: 'phase' } }, 'Esc 在设置页先回检视器')
+  assert.deepEqual(decideEscAction({ panePage: 'trash' }, false), { patch: { panePage: 'phase' } })
+  assert.deepEqual(decideEscAction({ panePage: 'phase' }, false), { closePanel: true }, '已经在检视器，Esc 直接关面板')
   assert.deepEqual(decideEscAction({ settings: true }, false), { patch: { settings: false } })
   assert.deepEqual(decideEscAction({ forkDraft: { title: 'x' } }, false), { patch: { forkDraft: null } })
   assert.deepEqual(decideEscAction({ confirm: { text: '删？' } }, false), { patch: { confirm: null } })
@@ -565,6 +569,7 @@ test('D4 decideEscAction：层级顺序固定（设置 → 弹层 → 确认 →
 
 test('D4 Esc 层顺序表本身不许乱序（面板关闭必须是最后一层）', () => {
   assert.deepEqual(ESC_LAYERS.map(([key]) => key), [
+    'panePage',
     'settings',
     'forkDraft',
     'confirm',

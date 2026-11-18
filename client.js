@@ -117,6 +117,8 @@ window.__ModuleLoader__.load({
 
     // D4：Esc 分层。函数只返回「该做什么」，调用方负责执行，顺带让层级顺序可被单测锁定。
     const ESC_LAYERS = [
+      // 0.5.0：右栏的固定页（设置/回收站/数据卫生）先退回阶段检视，再关面板。
+      ['panePage', (value) => typeof value === 'string' && value !== '' && value !== 'phase', { panePage: 'phase' }],
       ['settings', (value) => value === true, { settings: false }],
       ['forkDraft', (value) => value !== null && value !== undefined, { forkDraft: null }],
       ['confirm', (value) => value !== null && value !== undefined, { confirm: null }],
@@ -181,6 +183,19 @@ window.__ModuleLoader__.load({
       moveSessionId: null,
       migratePickerOf: null,
       selectedProjectId: null,
+      // 0.5.0 UI：右栏检视对象与当前页
+      selectedPhaseId: null,
+      panePage: 'phase',
+      insTab: 'detail',
+      railQuery: '',
+      tlFilter: 'all',
+      tlOnlyOpen: false,
+      menuOpen: false,
+      bannerOpen: false,
+      searchAll: false,
+      problemDraftPhaseId: null,
+      migrateQuery: '',
+      migrateTargetId: null,
       data: null,
       loading: false,
       error: null,
@@ -516,6 +531,7 @@ window.__ModuleLoader__.load({
 .pj-notice{padding:8px 16px;background:color-mix(in srgb,var(--pj-success) 14%,transparent);color:var(--pj-success);font-size:12px;display:flex;gap:12px;align-items:center;justify-content:space-between}
 .pj-error{padding:8px 16px;background:color-mix(in srgb,var(--pj-danger) 14%,transparent);color:var(--pj-danger);font-size:12px}
 .pj-foot{padding:7px 16px;border-top:1px solid var(--pj-border);color:var(--pj-text-tertiary);font-size:11px;display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+.pj-confirmbar{position:absolute;left:12px;right:12px;bottom:10px;padding:9px 11px;border-radius:10px;background:var(--pj-surface-raise);border:1px solid var(--pj-accent);display:flex;align-items:center;gap:9px;z-index:6;font-size:12px;box-shadow:0 12px 36px rgba(0,0,0,.45)}
 .pj-settings{position:absolute;right:18px;top:56px;width:340px;background:var(--pj-surface);border:1px solid var(--pj-border);border-radius:11px;padding:14px;box-shadow:0 16px 40px rgba(0,0,0,.5);z-index:5;display:flex;flex-direction:column;gap:9px}
 .pj-label{font-size:11px;color:var(--pj-text-tertiary);margin-bottom:-4px}
 .pj-icon{width:16px;height:16px;display:block}
@@ -545,6 +561,74 @@ window.__ModuleLoader__.load({
 .pj-gap-inline{background:none;border:0;padding:0;cursor:pointer;font:inherit;text-align:left;max-width:46vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pj-inferred-note{font-size:10px;opacity:.75;margin-right:4px}
 .pj-badge{font-size:10px;min-width:15px;height:15px;padding:0 4px;border-radius:999px;background:var(--pj-warn);color:var(--pj-on-warn);display:inline-flex;align-items:center;justify-content:center;font-weight:600}
+/* ---------- 0.5.0 三栏：左项目 / 中时间线 / 右检视 ---------- */
+.pj-panel2{width:min(1360px,96vw);height:min(880px,92vh);display:flex;flex-direction:column;border-radius:14px;overflow:hidden;background:var(--pj-surface);color:var(--pj-text);border:1px solid var(--pj-border);box-shadow:0 24px 80px rgba(0,0,0,.55);font-size:13px}
+.pj-top{flex:0 0 54px;display:flex;align-items:center;gap:9px;padding:0 13px;border-bottom:1px solid var(--pj-border)}
+.pj-top-title{font-size:15px;font-weight:600;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pj-top-tabs{display:flex;gap:4px;align-items:center;overflow:hidden}
+.pj-top-tab{appearance:none;height:26px;padding:0 10px;border-radius:999px;border:1px solid transparent;background:transparent;color:var(--pj-text-secondary);cursor:pointer;font-size:12px;white-space:nowrap}
+.pj-top-tab:hover{background:var(--pj-hover);color:var(--pj-text)}
+.pj-top-tab.on{border-color:var(--pj-border-l1);background:var(--pj-surface-raise);color:var(--pj-text)}
+.pj-top-search{width:190px;height:28px;border-radius:8px;border:1px solid var(--pj-border-l1);background:var(--pj-surface-platform);color:var(--pj-text);padding:0 9px;font-size:12px;outline:none}
+.pj-top-search:focus{border-color:var(--pj-accent)}
+.pj-top-status{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--pj-text-tertiary);cursor:default}
+.pj-top-dot{width:7px;height:7px;border-radius:50%;background:var(--pj-success)}
+.pj-grid{flex:1;min-height:0;display:grid;grid-template-columns:224px minmax(0,1fr) 360px}
+.pj-rail{border-right:1px solid var(--pj-border);display:flex;flex-direction:column;min-height:0}
+.pj-litem{appearance:none;border:0;background:transparent;color:var(--pj-text-secondary);font-size:12px;padding:6px 8px;border-radius:7px;cursor:pointer;display:flex;align-items:center;gap:7px}
+.pj-litem:hover{background:var(--pj-hover);color:var(--pj-text)}
+.pj-rt{color:var(--pj-text);letter-spacing:.01em}
+.pj-rail-search{margin:9px 9px 5px}
+.pj-rail-search input{width:100%;height:28px;border-radius:7px;border:1px solid var(--pj-border-l1);background:var(--pj-surface-platform);color:var(--pj-text);padding:0 9px;font-size:12px;outline:none}
+.pj-rail-list{flex:1;overflow:auto;padding:0 7px}
+.pj-rail-row{position:relative;display:block;width:100%;text-align:left;border:0;background:transparent;color:var(--pj-text);padding:8px 9px 8px 11px;border-radius:8px;cursor:pointer;margin-bottom:1px}
+.pj-rail-row:hover{background:var(--pj-hover)}
+.pj-rail-row.on{background:var(--pj-surface-raise)}
+.pj-rail-row.on::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2px;border-radius:2px;background:var(--pj-accent)}
+.pj-rail-t{font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pj-rail-m{display:flex;gap:7px;align-items:center;color:var(--pj-text-tertiary);font-size:11px;margin-top:1px}
+.pj-rail-warn{color:var(--pj-warn)}
+.pj-rail-foot{border-top:1px solid var(--pj-border);padding:5px 7px;display:flex;flex-direction:column;gap:1px}
+.pj-tl{display:flex;flex-direction:column;min-height:0}
+.pj-tl-scroll{flex:1;overflow:auto;padding:12px 16px 22px}
+.pj-tl-fold{display:flex;align-items:center;gap:8px;color:var(--pj-text-tertiary);font-size:11.5px;padding:2px 0 12px 24px}
+.pj-tl-fold i{height:1px;flex:1;background:var(--pj-border);display:block}
+.pj-tl-node{position:relative;padding-left:24px;margin-bottom:6px}
+.pj-tl-node::before{content:"";position:absolute;left:6px;top:0;bottom:-6px;width:2px;background:var(--pj-border)}
+.pj-tl-node:last-child::before{bottom:50%}
+.pj-tl-knob{position:absolute;left:1px;top:14px;width:12px;height:12px;border-radius:50%;background:var(--pj-surface);border:2px solid var(--pj-border-strong);z-index:1}
+.pj-tl-node.on .pj-tl-knob{border-color:var(--pj-accent);background:var(--pj-accent)}
+.pj-tl-node.done .pj-tl-knob{border-color:var(--pj-success)}
+.pj-tl-card{border:1px solid var(--pj-border-l1);background:var(--pj-surface-raise);border-radius:10px;padding:9px 11px;cursor:pointer}
+.pj-tl-card:hover{border-color:var(--pj-border-strong)}
+.pj-tl-node.on .pj-tl-card{border-color:var(--pj-accent)}
+.pj-tl-h{display:flex;align-items:center;gap:7px;min-width:0}
+.pj-tl-idx{color:var(--pj-text-tertiary);font-size:11px;font-variant-numeric:tabular-nums;width:16px;flex:0 0 16px}
+.pj-tl-title{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pj-tl-sum{color:var(--pj-text-secondary);font-size:11.5px;margin-top:3px;padding-left:23px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pj-tl-badges{display:flex;gap:5px;flex-wrap:wrap;padding-left:23px;margin-top:5px}
+.pj-tl-badge{font-size:10.5px;color:var(--pj-text-tertiary);border:1px solid var(--pj-border);border-radius:6px;padding:0 5px}
+.pj-tl-badge.warn{color:var(--pj-warn);border-color:color-mix(in srgb,var(--pj-warn) 45%,transparent)}
+.pj-ins{border-left:1px solid var(--pj-border);display:flex;flex-direction:column;min-height:0}
+.pj-ins-head{flex:0 0 42px;display:flex;align-items:center;gap:7px;padding:0 11px;border-bottom:1px solid var(--pj-border)}
+.pj-ins-tabs{display:flex;gap:1px;padding:5px 7px 0;border-bottom:1px solid var(--pj-border);overflow:auto}
+.pj-ins-tab{appearance:none;border:0;background:transparent;color:var(--pj-text-tertiary);font-size:12px;padding:6px 7px;border-bottom:2px solid transparent;cursor:pointer;white-space:nowrap}
+.pj-ins-tab.on{color:var(--pj-text);border-color:var(--pj-accent)}
+.pj-ins-body{flex:1;overflow:auto;padding:11px 12px}
+.pj-ins-foot{flex:0 0 50px;border-top:1px solid var(--pj-border);display:flex;gap:6px;align-items:center;padding:0 11px}
+.pj-bannerbar{padding:0 12px}
+.pj-bannerbar .pj-banner{margin:8px 0 0}
+.pj-banner-more{margin-left:auto;border:0;background:transparent;color:inherit;cursor:pointer;font-size:11px;text-decoration:underline}
+.pj-banner-list{margin:6px 0 0;padding:8px 10px;border:1px solid var(--pj-border);border-radius:8px;background:var(--pj-surface-raise);font-size:11.5px;color:var(--pj-text-secondary);display:flex;flex-direction:column;gap:5px}
+.pj-toasts{position:fixed;right:22px;bottom:22px;display:flex;flex-direction:column;gap:6px;z-index:2147483646}
+.pj-toast{background:var(--pj-surface-raise);border:1px solid var(--pj-accent);color:var(--pj-text);padding:8px 11px;border-radius:9px;font-size:12px;box-shadow:0 12px 36px rgba(0,0,0,.5);max-width:360px}
+.pj-kv{display:flex;gap:7px;color:var(--pj-text-tertiary);font-size:11px;margin-bottom:9px;flex-wrap:wrap;align-items:center}
+.pj-sec{margin-bottom:13px}
+.pj-sec-h{font-size:11px;color:var(--pj-text-tertiary);font-weight:600;margin-bottom:5px}
+.pj-empty2{color:var(--pj-text-tertiary);font-size:12px;padding:8px 0}
+.pj-item{border:1px solid var(--pj-border-l1);border-radius:8px;padding:7px 8px;margin-bottom:5px;background:var(--pj-surface-platform)}
+.pj-item-t{font-size:12.5px}
+.pj-item-s{color:var(--pj-text-secondary);font-size:11.5px;margin-top:3px}
 `
 
     function ensureStyle() {
@@ -587,6 +671,20 @@ window.__ModuleLoader__.load({
       const phases = (project.phases ?? []).filter((phase) => (phase.branchId ?? 'main') === (branch?.status === 'active' ? branchId : 'main'))
       const ordered = phases.slice().sort((left, right) => left.seq - right.seq)
       return ordered.length === 0 ? null : ordered[ordered.length - 1]
+    }
+
+    // 0.5.0 UI：一条分支在界面上的阶段序列 = 主线前缀（只读）+ 本分支自有阶段。
+    function projectChain(project, branchId) {
+      const branches = Array.isArray(project?.branches) ? project.branches : []
+      const main = { id: 'main', title: '主线', status: 'active', fromSeq: null }
+      const branch = branches.find((item) => item.id === branchId) ?? branches.find((item) => item.id === 'main') ?? main
+      const all = Array.isArray(project?.phases) ? project.phases : []
+      const mainPhases = all.filter((phase) => (phase.branchId ?? 'main') === 'main')
+      const own = branch.id === 'main' ? mainPhases : all.filter((phase) => phase.branchId === branch.id)
+      const cut = typeof branch.fromSeq === 'number' ? branch.fromSeq : 0
+      const prefix = branch.id === 'main' ? [] : mainPhases.filter((phase) => phase.seq < cut).map((phase) => ({ ...phase, prefix: true }))
+      const chain = [...prefix, ...own]
+      return { branch, prefix, own, chain }
     }
 
     function nextCount(project) {
@@ -1112,239 +1210,6 @@ window.__ModuleLoader__.load({
       )
     }
 
-    function PhaseCard({ project, phase, index, onFork }) {
-      const [problemDraft, setProblemDraft] = useState(null)
-      const [busy, setBusy] = useState(false)
-      const artifacts = Array.isArray(phase.artifactStatus)
-        ? phase.artifactStatus
-        : (phase.artifacts ?? []).map((name) => ({ name, exists: true }))
-      const missingArtifacts = artifacts.filter((entry) => entry.exists !== true)
-      const evidenced = evidencedProblems(phase)
-      const inferred = inferredProblems(phase)
-      const inferredOpen = store.inferredOpen === phase.id
-      const remove = () => {
-        askConfirm(`把阶段「${phase.title}」移入回收站，并裁剪它的真实上下文？该阶段已登记的产物会移出项目目录（后续会话/检索读不到），相关会话从项目列表隐藏且不再自动归纳；会话日志本身不删。注意：只裁剪登记在「产物」里的文件——如果这个阶段有产出没记进来，先点「重扫产物」补登记。误删可在阶段链底部「已删除」里恢复。`, async () => {
-          setBusy(true)
-          try {
-            await api('/api/phase', { projectId: project.id, phaseId: phase.id, action: 'delete' })
-            await refresh()
-          } finally {
-            setBusy(false)
-          }
-        })
-      }
-      const rescan = async () => {
-        try {
-          const result = await api('/api/phase/rescan', { projectId: project.id, phaseId: phase.id })
-          setState({ notice: result.added.length > 0 ? `补记了 ${result.added.length} 个产物：${result.added.join('、')}` : '没有发现新的产物文件' })
-          await refresh()
-        } catch (error) {
-          setState({ error: String(error?.message ?? error) })
-        }
-      }
-      const readOnly = phase.prefix === true
-      return h(
-        'div',
-        { className: `pj-phase ${phase.status}${readOnly ? ' prefix' : ''}` },
-        h(
-          'div',
-          { className: 'pj-phase-top' },
-          h('span', { className: 'pj-seq' }, String(index + 1).padStart(2, '0')),
-          h('span', { className: 'pj-phase-title' }, phase.title),
-          h('span', { className: `pj-chip ${phase.status}` }, phase.status === 'done' ? '已完成' : phase.status === 'active' ? '进行中' : '计划中'),
-          phase.redoOf ? h('span', { className: 'pj-chip redo' }, '↺ 重做') : null,
-          phase.current ? h('span', { className: 'pj-chip current' }, '当前阶段') : null,
-          readOnly ? h('span', { className: 'pj-chip abandoned' }, '主线已走过') : null,
-          phase.manual === true
-            ? h('span', { className: 'pj-chip', title: '这条进展记录被手动改过，修订历史保留在数据里，后续自动总结不会覆盖' }, `手改${Number(phase.revisionCount ?? 0) > 0 ? ` ${phase.revisionCount}` : ''}`)
-            : null,
-          h('span', { className: 'pj-spacer', style: { flex: 1 } }),
-          h('span', { className: 'pj-seq' }, timeText(phase.startedAt)),
-        ),
-        h(SummaryMetaLine, { phase }),
-        phase.summary ? h('div', { className: 'pj-phase-summary' }, phase.summary) : null,
-        artifacts.length > 0
-          ? h(
-              'div',
-              { className: 'pj-artifacts' },
-              artifacts.map((entry, index) =>
-                h(
-                  'button',
-                  {
-                    className: `pj-art pj-art-btn${entry.exists === true ? '' : ' pj-art-missing'}`,
-                    type: 'button',
-                    key: index,
-                    title: entry.exists === true ? `打开 ${entry.name}` : `${entry.name} 已不存在（文件被移动或删除）`,
-                    onClick: act('artifact-open', (event) => {
-                      event.stopPropagation()
-                      return openArtifact(project, entry.name)
-                    }),
-                  },
-                  entry.name,
-                ),
-              ),
-              missingArtifacts.length > 0 && readOnly !== true
-                ? h(
-                    'button',
-                    {
-                      className: 'pj-btn ghost pj-art-prune',
-                      type: 'button',
-                      title: '把这些已不存在的文件从产物记录里移除（只删记录，不动磁盘）',
-                      onClick: act('artifact-prune', async (event) => {
-                        event.stopPropagation()
-                        const result = await api('/api/artifact/prune', { projectId: project.id, phaseId: phase.id })
-                        setState({ notice: `已清理 ${Number(result.removed ?? 0)} 条失效产物记录` })
-                        await refresh()
-                      }),
-                    },
-                    `清理失效 ${missingArtifacts.length}`,
-                  )
-                : null,
-            )
-          : null,
-        phase.status === 'active' && (phase.nextSteps ?? []).length === 0 && readOnly !== true
-          ? h('div', { className: 'pj-note', style: { marginTop: 4 } }, '这个阶段还没有「下一步」——点下面的「+ 下一步」补一条。')
-          : null,
-        (phase.nextSteps ?? []).length > 0
-          ? h(
-              'div',
-              { className: 'pj-next' },
-              h('div', { className: 'pj-next-h' }, `下一步 · ${phase.nextSteps.length}`),
-              phase.nextSteps.map((step, stepIndex) =>
-                h(
-                  'div',
-                  { className: 'pj-next-item', key: stepIndex },
-                  h('span', { className: 'pj-next-dot' }, '·'),
-                  h('span', { className: 'pj-next-text' }, step),
-                  readOnly
-                    ? null
-                    : h(
-                        'button',
-                        {
-                          className: 'pj-btn ghost pj-next-x',
-                          type: 'button',
-                          title: '移除这一条',
-                          onClick: act('next-step-remove', async () => {
-                            const next = phase.nextSteps.filter((item, index2) => index2 !== stepIndex)
-                            await api('/api/phase', { projectId: project.id, phaseId: phase.id, nextSteps: next.join('|') })
-                            await refresh()
-                          }),
-                        },
-                        '×',
-                      ),
-                ),
-              ),
-            )
-          : null,
-        h(
-          'div',
-          { className: 'pj-problems' },
-          evidenced.map((problem) =>
-            h(
-              'div',
-              { className: `pj-problem ${problem.status === 'open' ? 'open' : ''}`, key: problem.id },
-              store.editingProblemId === problem.id
-                ? h(ProblemForm, { project, phase, problem, done: () => setState({ editingProblemId: null }) })
-                : h(
-                    'div',
-                    null,
-                    h('div', { className: 'pj-problem-st' }, problem.statement),
-                    problem.quote ? h('div', { className: 'pj-quote' }, `「${problem.quote}」`) : null,
-                    problem.resolution ? h('div', { className: 'pj-res' }, `处理：${problem.resolution}`) : null,
-                    h(
-                      'div',
-                      { className: 'pj-phase-actions' },
-                      h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('problem-edit-open', () => setState({ editingProblemId: problem.id })) }, '修正'),
-                      h(
-                        'button',
-                        {
-                          className: 'pj-btn ghost',
-                          type: 'button',
-                          onClick: act('problem-delete-confirm', () => {
-                            askConfirm('删除这条问题记录？不可撤销。', async () => {
-                              await api('/api/problem', { projectId: project.id, phaseId: phase.id, problemId: problem.id, action: 'delete' })
-                              await refresh()
-                            })
-                          }),
-                        },
-                        '删除',
-                      ),
-                    ),
-                  ),
-            ),
-          ),
-          inferred.length > 0
-            ? h(
-                'div',
-                { className: 'pj-inferred' },
-                h(
-                  'button',
-                  {
-                    className: 'pj-btn ghost pj-inferred-head',
-                    type: 'button',
-                    title: '这些条目没有用户原话（quote），按「推测」处理，不计入未解决',
-                    onClick: act('inferred-toggle', () => setState({ inferredOpen: inferredOpen ? null : phase.id })),
-                  },
-                  `推测 ${inferred.length} 条（未解决 ${inferred.filter((problem) => problem.status === 'open').length} / 已解决 ${inferred.filter((problem) => problem.status !== 'open').length}，无原话，不计入未解决${inferredOpen ? '' : ' · 点开'}）`,
-                ),
-                inferredOpen
-                  ? h(
-                      'div',
-                      { className: 'pj-inferred-list' },
-                      inferred.map((problem) =>
-                        h(
-                          'div',
-                          { className: 'pj-problem inferred', key: problem.id },
-                          h('div', { className: 'pj-problem-st' }, problem.statement),
-                          h('div', { className: 'pj-sub' }, `无原话 · 状态 ${problem.status === 'open' ? '未解决' : '已解决'}`),
-                          problem.resolution ? h('div', { className: 'pj-res' }, `处理：${problem.resolution}`) : null,
-                        ),
-                      ),
-                    )
-                  : null,
-              )
-            : null,
-          readOnly ? null : problemDraft === phase.id
-            ? h(ProblemForm, { project, phase, done: () => setProblemDraft(null) })
-            : h('button', { className: 'pj-btn ghost', type: 'button', style: { alignSelf: 'flex-start', fontSize: 11.5 }, onClick: act('problem-create-open', () => setProblemDraft(phase.id)) }, '+ 补一条问题记录'),
-        ),
-        h(
-          'div',
-          { className: 'pj-phase-actions' },
-          readOnly ? null : h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('phase-edit-open', () => setState({ editingPhaseId: phase.id, editingPhaseProjectId: project.id })) }, '改阶段'),
-          readOnly
-            ? null
-            : store.stepDraft === phase.id
-              ? h(StepForm, { project, phase, done: () => setState({ stepDraft: null }) })
-              : h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('step-open', () => setState({ stepDraft: phase.id })) }, '+ 下一步'),
-          h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('fork-open', () => onFork(phase)) }, readOnly ? '从主线此阶段开分支' : '从此阶段开分支'),
-          readOnly
-            ? null
-            : h('button', { className: 'pj-btn ghost', type: 'button', title: '重新扫描项目目录，把该阶段之后产出、但没记进产物的文件补进来（否则删除阶段时不会被裁剪）', onClick: act('rescan-artifacts', () => { void rescan() }) }, '重扫产物'),
-          readOnly ? null : h('button', { className: 'pj-btn ghost', type: 'button', disabled: busy, onClick: act('phase-delete-confirm', remove) }, '删除阶段'),
-          phase.sessions.length === 0
-            ? h('span', { className: 'pj-seq' }, '无会话')
-            : h(
-                'div',
-                { className: 'pj-sessions' },
-                phase.sessions.map((sessionId) => {
-                  const rec = (project.sessions ?? []).find((item) => item.sessionId === sessionId)
-                  return h(
-                    'button',
-                    {
-                      key: sessionId,
-                      className: 'pj-chip session',
-                      type: 'button',
-                      title: `${rec?.title ?? sessionId}\n${rec?.cwd ?? ''}\n点击打开会话`,
-                      onClick: act('session-chip', () => openSessionById(sessionId)),
-                    },
-                    `会话 ${(rec?.title ?? sessionId).slice(0, 18)}`,
-                  )
-                }),
-              ),
-        ),
-      )
-    }
 
     function Trash({ project }) {
       const items = Array.isArray(project.trash) ? project.trash : []
@@ -1577,311 +1442,6 @@ window.__ModuleLoader__.load({
       )
     }
 
-    function ProjectDetail({ project, data }) {
-      const move = store.moveSessionId
-      const branches = project.branches ?? []
-      const currentId = branchSelected(project)
-      const branch = branches.find((item) => item.id === currentId) ?? branches[0] ?? { id: 'main', title: '主线', status: 'active', fromSeq: null }
-      const mainPhases = project.phases.filter((phase) => (phase.branchId ?? 'main') === 'main')
-      const ownPhases = currentId === 'main' ? mainPhases : project.phases.filter((phase) => phase.branchId === currentId)
-      const prefixPhases = currentId === 'main' ? [] : mainPhases.filter((phase) => phase.seq < (branch.fromSeq ?? 0)).map((phase) => ({ ...phase, prefix: true }))
-      const chainPhases = [...prefixPhases, ...ownPhases]
-      const pickBranch = (id) => setState({ branchOf: { ...store.branchOf, [project.id]: id } })
-      const startFork = async (phase) => {
-        try {
-          const seed = await api('/api/branch/seed', { projectId: project.id, phaseId: phase.id })
-          setState({ forkDraft: { projectId: project.id, phaseId: phase.id, phaseTitle: phase.title, isRedo: phase.redoOf !== null && phase.redoOf !== undefined, fromSeq: seed.fromSeq, title: seed.title, prompt: seed.prompt, context: seed.context ?? null } })
-        } catch (error) {
-          beacon('fork-error:' + String(error?.message ?? error).slice(0, 80))
-          setState({ error: String(error?.message ?? error) })
-        }
-      }
-      const setBranch = async (action) => {
-        try {
-          await api('/api/branch/status', { projectId: project.id, branchId: currentId, action })
-          await refresh()
-        } catch (error) {
-          setState({ error: String(error?.message ?? error) })
-        }
-      }
-      const dropBranch = () => {
-        const remove = async (force) => {
-          const result = await api('/api/branch/delete', { projectId: project.id, branchId: currentId, force: force ? 1 : undefined })
-          setState({ branchOf: { ...store.branchOf, [project.id]: 'main' }, notice: force
-            ? `分支已删除；${result.softDeleted ?? 0} 个阶段移进回收站，${result.sessionsMoved ?? 0} 个会话回到主线`
-            : `分支已删除` })
-          await refresh()
-        }
-        askConfirm(`删除分支「${branch.title}」？分支里的阶段会一起移进回收站（不论有没有内容，阶段链底部「已删除」可恢复），有内容的阶段还会从项目视角隐藏相关会话，但对话历史不删。`, async () => {
-          try {
-            await remove(false)
-          } catch (error) {
-            if (error?.code !== 'branch-not-empty') {
-              setState({ error: String(error?.message ?? error) })
-              return
-            }
-            askConfirm('这个分支里还有会话或总结。继续删除会把它们转进回收站（可在「已删除」里恢复），并从主线视角隐藏相关会话。确定继续？', async () => {
-              try {
-                await remove(true)
-              } catch (inner) {
-                setState({ error: String(inner?.message ?? inner) })
-              }
-            })
-          }
-        })
-      }
-      const mergeIntoMain = () => {
-        askConfirm(`把分支「${branch.title}」的阶段按顺序并入主线？并入后这些阶段会出现在主线链里，分支保留为「已合并」可查看。`, async () => {
-          try {
-            const result = await api('/api/branch/merge', { projectId: project.id, branchId: currentId })
-            const conflicts = Array.isArray(result.conflicts) ? result.conflicts : []
-            setState({ branchOf: { ...store.branchOf, [project.id]: 'main' }, notice: conflicts.length === 0
-              ? `已把 ${result.moved} 个阶段并入主线`
-              : `已把 ${result.moved} 个阶段并入主线；有 ${conflicts.length} 个阶段和主线同名（${conflicts.map((item) => item.phaseTitle).join('、')}），建议在主线里合并或删掉重复的那份` })
-            await refresh()
-          } catch (error) {
-            setState({ error: String(error?.message ?? error) })
-          }
-        })
-      }
-      const openAttach = async () => {
-        try {
-          const result = await api('/api/backups').catch(() => null)
-          void result
-          setState({ attachFor: { projectId: project.id, branchId: currentId } })
-        } catch (error) {
-          setState({ error: String(error?.message ?? error) })
-        }
-      }
-      const addPhase = () => setState({ phaseDraft: { projectId: project.id, branchId: currentId } })
-      const exportMarkdown = async () => {
-        try {
-          const base = await ensureBase()
-          const response = await fetch(`${base}/api/export?projectId=${encodeURIComponent(project.id)}`)
-          const text = await response.text()
-          try {
-            if (navigator?.clipboard?.writeText) await navigator.clipboard.writeText(text)
-          } catch {}
-          const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' })
-          const url = URL.createObjectURL(blob)
-          const anchor = document.createElement('a')
-          anchor.href = url
-          anchor.download = `${String(project.title).replace(/[\\/:*?"<>|]/g, '_')}-进展.md`
-          document.body.appendChild(anchor)
-          anchor.click()
-          anchor.remove()
-          setTimeout(() => URL.revokeObjectURL(url), 4000)
-          setState({ notice: '已导出 Markdown（同时尝试复制到剪贴板）' })
-        } catch (error) {
-          setState({ error: String(error?.message ?? error) })
-        }
-      }
-      const startRename = () => setState({ renameDraft: currentId })
-      const unmergeFromMain = async () => {
-        try {
-          const result = await api('/api/branch/unmerge', { projectId: project.id, branchId: currentId })
-          const restored = Number(result?.restored ?? 0)
-          setState({ notice: restored > 0 ? `已撤销合并，${restored} 个阶段回到该分支` : '已撤销合并（该分支没有可回退的阶段）' })
-          await refresh()
-        } catch (error) {
-          setState({ error: String(error?.message ?? error) })
-        }
-      }
-      const repro = data?.reproject ?? null
-      const reprojectBusy = repro?.running === true && repro?.projectId === project.id
-      const reprojectLabel = reprojectBusy
-        ? `归纳中 ${repro.done}/${repro.total} · 停止`
-        : '重新归纳本项目'
-      const toggleReproject = async () => {
-        try {
-          await api('/api/reproject', {
-            projectId: project.id,
-            action: reprojectBusy ? 'stop' : 'start',
-            rebuild: project.phases.length === 0 ? 1 : 0,
-          })
-          await refresh()
-        } catch (error) {
-          setState({ error: String(error?.message ?? error) })
-        } finally {
-          setTimeout(() => { refresh() }, 1200)
-        }
-      }
-      const filter = store.phaseFilter ?? 'all'
-      const onlyOpen = store.onlyOpen === true
-      const visiblePhases = chainPhases.filter((phase) => {
-        if (filter !== 'all' && phase.status !== filter) return false
-        if (onlyOpen && !(phase.problems ?? []).some((problem) => problem.status === 'open')) return false
-        return true
-      })
-      const counts = {
-        all: chainPhases.length,
-        active: chainPhases.filter((phase) => phase.status === 'active').length,
-        done: chainPhases.filter((phase) => phase.status === 'done').length,
-        planned: chainPhases.filter((phase) => phase.status === 'planned').length,
-      }
-      const filterBar = h(
-        'div',
-        { className: 'pj-filters' },
-        h('span', { className: 'pj-note' }, '筛选：'),
-        ...[
-          ['all', `全部 ${counts.all}`],
-          ['active', `进行中 ${counts.active}`],
-          ['done', `已完成 ${counts.done}`],
-          ['planned', `计划中 ${counts.planned}`],
-        ].map(([key, label]) =>
-          h(
-            'button',
-            { key, className: `pj-chip pj-filter ${filter === key ? 'on' : ''}`, type: 'button', onClick: act(`filter-${key}`, () => setState({ phaseFilter: key })) },
-            label,
-          ),
-        ),
-        h(
-          'button',
-          { className: `pj-chip pj-filter ${onlyOpen ? 'on' : ''}`, type: 'button', onClick: act('filter-open-only', () => setState({ onlyOpen: onlyOpen !== true })) },
-          '只看有未解决问题',
-        ),
-      )
-      const chain = h(
-        'div',
-        { className: 'pj-chain' },
-        visiblePhases.length === 0
-          ? h('div', { className: 'pj-empty' }, filter !== 'all' || onlyOpen ? '当前筛选下没有阶段，换个筛选条件试试。' :
-              currentId === 'main'
-                ? project.locked === true
-                  ? '这个项目是「未归属会话」（不属于任何工作区）。点右上「重新归纳本项目」可以让模型按会话自身目标归纳阶段；也可以「新建阶段」手动记一条，或把会话迁进某个项目。'
-                  : '这个项目还没有阶段。会话结束后会自动归纳；也可以点右上「新建阶段」手动记一条，或到设置里启动历史回填。'
-                : '这条分支还没有阶段。新会话结束后会自动归纳到这里，也可以点右上「新建阶段」手动加一条。')
-          : visiblePhases.map((phase, index) => h(PhaseCard, { project, phase, index, key: `${phase.prefix ? 'p' : 'b'}-${phase.id}`, onFork: startFork })),
-      )
-      const suggestions = Array.isArray(project.suggestions) ? project.suggestions : []
-      const suggestBar = suggestions.length === 0
-        ? null
-        : h(
-            'div',
-            { className: 'pj-suggest' },
-            h('div', { className: 'pj-suggest-h' }, `有 ${suggestions.length} 个会话的工作目录不属于当前项目`),
-            suggestions.map((item) =>
-              h(
-                'div',
-                { className: 'pj-suggest-row', key: item.sessionId },
-                h('span', { className: 'pj-suggest-text' }, `「${item.title}」的目录是 ${item.cwd}，更像「${item.targetTitle}」`),
-                h(
-                  'button',
-                  {
-                    className: 'pj-btn',
-                    type: 'button',
-                    onClick: act('migrate-suggest', async () => {
-                      try {
-                        await api('/api/migrate', { sessionId: item.sessionId, targetProjectId: item.targetProjectId })
-                        await refresh()
-                      } catch (error) {
-                        setState({ error: String(error?.message ?? error) })
-                      }
-                    }),
-                  },
-                  `迁到「${item.targetTitle}」`,
-                ),
-              ),
-            ),
-          )
-      const groups = (() => {
-        if (project.locked !== true) return []
-        const map = new Map()
-        for (const session of project.sessions ?? []) {
-          const key = typeof session.cwd === 'string' && session.cwd !== '' ? session.cwd : '（未知目录）'
-          map.set(key, (map.get(key) ?? 0) + 1)
-        }
-        return [...map.entries()].sort((left, right) => right[1] - left[1])
-      })()
-      const groupBar = groups.length === 0
-        ? null
-        : h(
-            'div',
-            { className: 'pj-suggest', style: { borderColor: 'var(--pj-border-strong)' } },
-            h('div', { className: 'pj-suggest-h' }, `未归属会话来自 ${groups.length} 个目录（迁进对应项目后才会按项目隔离）`),
-            groups.map(([cwd, count]) => h('div', { className: 'pj-suggest-row', key: cwd }, h('span', { className: 'pj-suggest-text' }, `${cwd} · ${count} 个会话`))),
-          )
-      const activePhase = chainPhases.filter((phase) => phase.current === true).slice(-1)[0] ?? chainPhases.slice(-1)[0] ?? null
-      const canPlan = activePhase !== null && activePhase.prefix !== true && project.locked !== true
-      const nextSteps = canPlan ? (activePhase.nextSteps ?? []) : []
-      const nextBar = activePhase === null || activePhase.prefix === true
-        ? null
-        : h(
-            'div',
-            { className: 'pj-nextbar' },
-            h('div', { className: 'pj-nextbar-h' }, '接下来', h('span', { className: 'pj-sub' }, ` · 来自「${activePhase.title}」`)),
-            nextSteps.length === 0
-              ? h('div', { className: 'pj-sub' }, project.locked === true
-                  ? '未归属会话默认不排下一步；迁进项目后可在这里补。'
-                  : '还没有下一步。会话结束后由模型补，也可以现在手动加一条。')
-              : nextSteps.map((step, index) => h('div', { className: 'pj-next-item', key: index }, h('span', { className: 'pj-next-dot' }, `${index + 1}.`), h('span', { className: 'pj-next-text' }, step))),
-            canPlan === false
-              ? null
-              : store.stepDraft === activePhase.id
-                ? h(StepForm, { project, phase: activePhase, done: () => setState({ stepDraft: null }) })
-                : h('button', { className: 'pj-btn ghost', type: 'button', style: { alignSelf: 'flex-start', fontSize: 11.5 }, onClick: act('step-create-open', () => setState({ stepDraft: activePhase.id })) }, nextSteps.length === 0 ? '+ 加一条下一步' : '+ 再加一条'),
-          )
-      return h(
-        'div',
-        null,
-        h(
-          'div',
-          { className: 'pj-row', style: { marginBottom: 10, flexWrap: 'wrap' } },
-          h('div', { className: 'pj-title' }, project.title),
-          h('span', { className: 'pj-sub' }, project.path || '未归属会话'),
-          h('span', { className: 'pj-spacer', style: { flex: 1 } }),
-          h('span', { className: 'pj-sub' }, `${project.sessions.length} 会话 · ${mainPhases.length} 阶段 · ${problemOpenCount(project)} 个未解决${inferredOpenCount(project) > 0 ? `（含推测 ${inferredOpenCount(project)} 条未计入）` : ''}`),
-          h('button', { className: 'pj-btn', type: 'button', onClick: act('reproject-toggle', toggleReproject) }, reprojectLabel),
-          repro !== null && repro?.projectId === project.id && repro?.running !== true && typeof repro?.error === 'string' && repro.error !== ''
-            ? h('span', { className: 'pj-note' }, repro.error)
-            : null,
-          h('button', { className: 'pj-btn ghost', type: 'button', 'aria-expanded': store.migratePickerOf === project.id, onClick: act('migrate-picker-toggle', () => setState({ migratePickerOf: store.migratePickerOf === project.id ? null : project.id })) }, '迁移会话…'),
-          h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('phase-create-open', addPhase) }, '新建阶段'),
-          h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('export-md', exportMarkdown) }, '导出 MD'),
-        ),
-        h(MigratePicker, { project }),
-        suggestBar,
-        nextBar,
-        h(BranchTabs, { project, currentId, onPick: pickBranch }),
-        currentId !== 'main'
-          ? h(
-              'div',
-              { className: 'pj-branchbar' },
-              h('span', { className: 'pj-sub' }, `分支「${branch.title}」从阶段 ${branch.fromSeq} 分叉；主线原阶段保留。`),
-              branch.seedSessionId ? h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('branch-session-open', () => openSessionById(branch.seedSessionId)) }, '打开分支会话') : null,
-              h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('attach-open', openAttach) }, '挂已有会话'),
-              h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('branch-diff-open', () => setState({ diffBranchId: currentId })) }, '与主线对比'),
-              h('span', { className: 'pj-spacer', style: { flex: 1 } }),
-              store.renameDraft === currentId
-                ? h(BranchRename, { project, branchId: currentId, initial: branch.title, done: () => setState({ renameDraft: null }) })
-                : h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('branch-rename', startRename) }, '重命名'),
-              branch.status === 'merged'
-                ? h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('branch-unmerge', unmergeFromMain) }, '撤销合并')
-                : h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('branch-merge-main', mergeIntoMain) }, '阶段并入主线'),
-              branch.status === 'merged' ? null : h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('branch-mark-merged', () => setBranch('merged')) }, '标记已合并'),
-              branch.status === 'abandoned' ? h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('branch-mark-active', () => setBranch('active')) }, '恢复为进行中') : h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('branch-mark-abandoned', () => setBranch('abandoned')) }, '放弃分支'),
-              branch.status === 'abandoned' ? h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('branch-drop', dropBranch) }, '删除分支') : null,
-            )
-          : null,
-        move !== null && project.id !== store.selectedProjectId
-          ? null
-          : move !== null
-            ? h('div', { className: 'pj-banner', style: { marginBottom: 12, borderRadius: 9 } },
-                h('span', null, '正在选择迁移目标：点左侧任意项目即可把会话迁过去'),
-                h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('move-cancel', () => setState({ moveSessionId: null })) }, '取消迁移'),
-              )
-            : null,
-        groupBar,
-        filterBar,
-        h(ForkDialog, { project, close: () => setState({ forkDraft: null }) }),
-        store.diffBranchId !== null && store.diffBranchId !== undefined
-          ? h(BranchDiff, { project, branchId: store.diffBranchId, done: () => setState({ diffBranchId: null }) })
-          : null,
-        h(ConsistencyBar, { project }),
-        chain,
-        h(Trash, { project }),
-      )
-    }
 
     function ConfirmModal() {
       const item = store.confirm
@@ -2089,6 +1649,7 @@ window.__ModuleLoader__.load({
     // client-v24 (hmr)
     // client-v25 (hmr)：修复面板点击被古法覆盖层劫持（portal 宿主幂等归位 + 控件动作诊断信标）
     // client-v26 (hmr)：补齐剩余点击的 act() 覆盖（回退 / 挂会话 / 分支状态 / 项目与搜索命中），包名公开化 + 中英 locale
+    // client-v27 (hmr)：0.5.0 三栏重写（左项目 / 中时间线 / 右检视器 + 页面态 Esc 分层）
     // B4/B5：失败横幅只统计真的失败（state==='error'）；skipped 单独列原因、不给重试按钮。
     function FailureBanner({ projects }) {
       const [busy, setBusy] = useState(null)
@@ -2135,28 +1696,7 @@ window.__ModuleLoader__.load({
     }
 
     // D7：古法皮肤激活时，项目页头部也常显迁移入口，不依赖会话行 hover。
-    function MigratePicker({ project }) {
-      if (store.migratePickerOf !== project.id) return null
-      const sessions = project.sessions ?? []
-      if (sessions.length === 0) return h('div', { className: 'pj-notice' }, '这个项目还没有可迁移的会话。')
-      return h(
-        'div',
-        { className: 'pj-notice', role: 'group', 'aria-label': '选择要迁移的会话' },
-        h('div', { className: 'pj-gap-head' }, `选择要迁移的会话（共 ${sessions.length} 个），然后点左侧目标项目`),
-        sessions.map((session) =>
-          h(
-            'div',
-            { className: 'pj-gap-row', key: session.sessionId },
-            h('span', { className: 'pj-gap-title', title: session.sessionId }, session.title ?? String(session.sessionId).slice(-8)),
-            h('span', { className: 'pj-sub' }, session.cwd ?? ''),
-            h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('migrate-pick-session', () => setState({ moveSessionId: session.sessionId, migratePickerOf: null })) }, '迁移这个会话'),
-          ),
-        ),
-        h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('migrate-picker-close', () => setState({ migratePickerOf: null })) }, '取消'),
-      )
-    }
 
-    // E2：只读列出「已不在工作区、也不属于未归属」的幽灵项目记录，并允许一条条删记录（不动目录）。
     function DataHygiene() {
       const [busy, setBusy] = useState(false)
       const orphans = store.orphans
@@ -2331,27 +1871,85 @@ window.__ModuleLoader__.load({
       if (selected !== null && selected.id !== store.selectedProjectId) {
         setTimeout(() => setState({ selectedProjectId: selected.id }), 0)
       }
-      const move = store.moveSessionId
-      const movingSession = move === null ? null : projects.flatMap((project) => project.sessions).find((session) => session.sessionId === move)
-      const onProjectClick = (project) => {
-        try {
-          if (move !== null) {
-            if (project.id === selected?.id) {
-              beacon('migrate-commit')
-              api('/api/migrate', { sessionId: move, targetProjectId: project.id })
-                .then(() => refresh())
-                .then(() => setState({ moveSessionId: null }))
-                .catch((error) => setState({ error: String(error?.message ?? error) }))
-              return
-            }
-            beacon('migrate-pick')
-            setState({ selectedProjectId: project.id })
-            return
-          }
-          setState({ selectedProjectId: project.id })
-        } catch (error) {
-          setState({ error: `切换项目失败：${String(error?.message ?? error).slice(0, 120)}` })
+      const branchId = selected === null ? 'main' : branchSelected(selected)
+      const { branch, chain } = selected === null ? { branch: { id: 'main', title: '主线', status: 'active' }, chain: [] } : projectChain(selected, branchId)
+      // 选中阶段：显式选中优先；失效则退回当前阶段（该分支最后一个）。
+      let phase = chain.find((item) => item.id === store.selectedPhaseId) ?? null
+      if (phase === null) {
+        const fallback = chain.slice(-1)[0] ?? null
+        phase = fallback
+        if (fallback !== null && store.selectedPhaseId !== fallback.id) {
+          setTimeout(() => setState({ selectedPhaseId: fallback.id }), 0)
         }
+      }
+      const panePage = store.panePage ?? 'phase'
+      const insTab = store.insTab ?? 'detail'
+      const query = (store.query ?? '').trim()
+      const tlFilter = store.tlFilter ?? 'all'
+      const visibleChain = chain.filter((item) => {
+        if (item.prefix === true) return true
+        if (tlFilter !== 'all' && item.status !== tlFilter) return false
+        if (store.tlOnlyOpen === true && !(item.problems ?? []).some((problem) => problem.status === 'open')) return false
+        if (query !== '') {
+          const hay = `${item.title}\n${item.summary ?? ''}\n${(item.problems ?? []).map((problem) => problem.statement ?? '').join('\n')}`
+          if (!hay.includes(query)) return false
+        }
+        return true
+      })
+      const railQuery = (store.railQuery ?? '').trim()
+      const railProjects = railQuery === '' ? projects : projects.filter((project) => String(project.title).includes(railQuery))
+      const setPhase = (id) => setState({ selectedPhaseId: id, panePage: 'phase', insTab: 'detail' })
+      const counts = {
+        all: chain.length,
+        active: chain.filter((item) => item.status === 'active').length,
+        done: chain.filter((item) => item.status === 'done').length,
+      }
+      const banners = []
+      if (store.error !== null && store.error !== undefined) banners.push({ kind: 'error', text: String(store.error) })
+      if (data?.journalError) banners.push({ kind: 'error', text: `进展数据文件读取失败，原文件已另存为 ${data.journalError.file}；可在「设置 → 从备份恢复」里恢复。` })
+      const pendingSessions = Number(data?.summary?.pending ?? 0)
+      if (pendingSessions > 0) banners.push({ kind: 'warn', text: `还有 ${pendingSessions} 个会话没有汇总到最新（never ${data.summary.never ?? 0} / stale ${data.summary.stale ?? 0}）` })
+      const move = store.moveSessionId
+      if (move !== null && move !== undefined) {
+        const moving = projects.flatMap((project) => project.sessions ?? []).find((session) => session.sessionId === move)
+        banners.push({ kind: 'action', text: `迁移「${moving?.title ?? move}」：在左栏点目标项目的「迁到这里」` })
+      }
+      const headBanner = banners.length === 0 ? null : h(
+        'div',
+        { className: `pj-banner ${banners[0].kind === 'error' ? 'pj-banner-error' : ''}`, role: banners[0].kind === 'error' ? 'alert' : undefined },
+        h('span', null, banners[0].text),
+        banners.length > 1
+          ? h('button', { className: 'pj-banner-more', type: 'button', onClick: act('banner-toggle', () => setState({ bannerOpen: store.bannerOpen !== true })) }, `另有 ${banners.length - 1} 条`)
+          : null,
+        move !== null && move !== undefined
+          ? h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('migrate-cancel', () => setState({ moveSessionId: null })) }, '取消迁移')
+          : null,
+        banners[0].kind === 'error' && store.error !== null
+          ? h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('error-dismiss', () => setState({ error: null })) }, '知道了')
+          : null,
+      )
+      const bannerList = store.bannerOpen === true && banners.length > 1
+        ? h('div', { className: 'pj-banner-list' }, banners.slice(1).map((item, index) => h('div', { key: index }, item.text)))
+        : null
+      const menuItems = [
+        ['reproject', data?.reproject?.running === true ? '停止归纳' : '重新归纳本项目'],
+        ['export', '导出 Markdown'],
+        ['search-all', '在所有项目里搜…'],
+        ['trash', '回收站'],
+        ['hygiene', '数据卫生'],
+        ['settings', '设置'],
+        ['refresh', '刷新'],
+      ]
+      const onMenu = (key) => {
+        setState({ menuOpen: false })
+        if (key === 'settings') return setState({ panePage: 'settings', settings: true })
+        if (key === 'trash') return setState({ panePage: 'trash' })
+        if (key === 'hygiene') return setState({ panePage: 'hygiene' })
+        if (key === 'refresh') return refresh({ force: true })
+        if (key === 'export') return void exportMarkdownOf(selected)
+        if (key === 'reproject') return void toggleReprojectOf(selected, data)
+        if (key === 'search-all') return setState({ query: '', railQuery: '', searchAll: true })
+        return undefined
       }
       return h(
         'div',
@@ -2363,8 +1961,6 @@ window.__ModuleLoader__.load({
           'aria-label': '项目进展面板',
           tabIndex: -1,
           style: { zIndex: 2147483640 },
-          // 面板是浮在宿主之上的模态层：阻断冒泡，避免宿主/其它插件挂在 document 上的
-          // 全局点击处理（例如古法皮肤的「点哪都进自己的页面」）抢走我们的点击。
           onMouseDown: (event) => { event.stopPropagation(); if (event.target === event.currentTarget) closePanel() },
           onClick: stopClickBubble,
           onDoubleClick: (event) => { event.stopPropagation() },
@@ -2374,145 +1970,368 @@ window.__ModuleLoader__.load({
         },
         h(
           'div',
-          { className: 'pj-panel', style: { position: 'relative' } },
+          { className: 'pj-panel pj-panel2', style: { position: 'relative' } },
           h(
             'div',
-            { className: 'pj-head' },
+            { className: 'pj-top' },
             h(Icon),
-            h('span', { className: 'pj-title' }, '项目进展'),
+            h('span', { className: 'pj-top-title', title: selected?.title ?? '' }, selected?.title ?? '项目进展'),
+            h(
+              'div',
+              { className: 'pj-top-tabs' },
+              selected === null ? null : (selected.branches ?? [{ id: 'main', title: '主线' }]).map((item) =>
+                h('button', {
+                  key: item.id,
+                  className: `pj-top-tab ${item.id === branchId ? 'on' : ''}`,
+                  type: 'button',
+                  onClick: act('branch-pick', () => setState({ branchOf: { ...store.branchOf, [selected.id]: item.id }, selectedPhaseId: null })),
+                }, item.title),
+              ),
+              selected === null ? null : h('button', { className: 'pj-top-tab', type: 'button', title: '从当前阶段开一条新分支', onClick: act('top-fork', () => { const last = chain.slice(-1)[0]; if (last) void startForkOf(selected, last) }) }, '＋'),
+            ),
+            h('span', { className: 'pj-spacer', style: { flex: 1 } }),
             h('input', {
-              className: 'pj-input pj-search',
-              placeholder: '搜索阶段 / 问题…',
-              'aria-label': '搜索阶段或问题',
+              className: 'pj-top-search',
+              placeholder: '筛选当前项目的阶段…',
+              'aria-label': '筛选阶段',
               'data-pj-search': '1',
               value: store.query ?? '',
               onChange: (event) => setState({ query: event.target.value }),
-              onKeyDown: (event) => {
-                if (event.key !== 'Escape') return
-                event.stopPropagation()
-                if ((store.query ?? '') !== '') setState({ query: '' })
-              },
+              onKeyDown: (event) => { if (event.key === 'Escape') { event.stopPropagation(); if ((store.query ?? '') !== '') setState({ query: '' }) } },
             }),
-            h('span', { className: 'pj-sub' }, modelLabel(data)),
-            data?.summary
-              ? h('button', {
-                  className: `pj-btn ghost pj-sub${(data.summary.pending ?? 0) > 0 ? ' pj-warn' : ''}`,
-                  type: 'button',
-                  title: '逐会话汇总覆盖率：点开看哪些会话还没汇总',
-                  onClick: act('summary-toggle', () => setState({ gapsOpen: store.gapsOpen !== true })),
-                }, `已汇总 ${data.summary.summarized}/${data.summary.total}`)
+            h('span', { className: 'pj-top-status', title: data?.model?.ready === true ? `模型 ${data.model.model}` : '模型未就绪' },
+              h('span', { className: 'pj-top-dot', style: { background: data?.model?.ready === true ? 'var(--pj-success)' : 'var(--pj-warn)' } }),
+              data?.model?.ready === true ? '就绪' : '模型待配置',
+            ),
+            h('button', { className: 'pj-btn primary', type: 'button', onClick: act('migrate-open', () => setState({ moveSessionId: null, migrateTargetId: null, migratePickerOf: selected?.id ?? null })) }, '迁移'),
+            h('button', { className: 'pj-btn', type: 'button', onClick: act('phase-create-open', () => setState({ phaseDraft: { projectId: selected?.id, branchId } })) }, '新建阶段'),
+            h('button', { className: 'pj-btn ghost', type: 'button', 'aria-expanded': store.menuOpen === true, onClick: act('menu-toggle', () => setState({ menuOpen: store.menuOpen !== true })) }, '⋯'),
+            store.menuOpen === true
+              ? h('div', { className: 'pj-settings', style: { top: 48, right: 12, width: 190, padding: 5 } },
+                  menuItems.map(([key, label]) => h('button', { key, className: 'pj-btn ghost', type: 'button', style: { display: 'block', width: '100%', textAlign: 'left' }, onClick: act(`menu-${key}`, () => onMenu(key)) }, label)))
               : null,
-            data?.backfill?.state === 'running'
-              ? h('span', { className: 'pj-sub' }, `回填中 ${data.backfill.processed}/${data.backfill.total}`)
-              : data?.summary && (data.summary.pending ?? 0) > 0
-                ? h(
-                    'button',
-                    {
-                      className: 'pj-sub pj-warn pj-gap-inline',
-                      type: 'button',
-                      title: `待汇总 ${data.summary.pending} 个会话（never ${data.summary.never ?? 0} / stale ${data.summary.stale ?? 0}）；点击展开游标与最近汇总时间`,
-                      onClick: act('summary-toggle', () => setState({ gapsOpen: store.gapsOpen !== true })),
-                    },
-                    gapSummaryText(data.summary),
-                  )
-                : null,
-            h('span', { className: 'pj-spacer' }),
-            h('button', { className: 'pj-btn ghost', type: 'button', 'aria-pressed': store.settings === true, onClick: act('settings-toggle', () => setState({ settings: store.settings !== true })) }, '设置'),
-            h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('refresh', () => refresh()) }, '刷新'),
             h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('close-click', closePanel) }, '关闭'),
           ),
-          store.gapsOpen === true && data?.summary
-            ? h(
-                'div',
-                { className: 'pj-notice pj-gaps' },
-                h('div', { className: 'pj-gap-head' }, `未汇总会话 ${data.summary.pending ?? 0} 个（never ${data.summary.never ?? 0} / stale ${data.summary.stale ?? 0} / skipped ${data.summary.skipped ?? 0}）· 事件游标与最近汇总时间如下`),
-                (data.summary.gaps ?? []).length === 0
-                  ? h('div', { className: 'pj-sub' }, '每个会话都汇总到了最新事件。')
-                  : h('div', { className: 'pj-gap-list' }, (data.summary.gaps ?? []).map((row) => h('div', { className: 'pj-gap-row' }, h('span', { className: 'pj-gap-title', title: row.sessionId }, `${row.title} · ${String(row.sessionId).slice(-8)}`), h('span', { className: 'pj-sub' }, `${row.state === 'never' ? '从未汇总' : '有新事件未汇总'} · 游标 ${row.cursorSeq} · ${row.lastSummarizedAt ?? '—'}`)))),
-                h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('summary-toggle', () => setState({ gapsOpen: false })) }, '收起'),
-              )
-            : null,
-          store.settings ? h(Settings, { data, close: () => setState({ settings: false }) }) : null,
-          move !== null
-            ? h('div', { className: 'pj-banner' }, h('span', null, `迁移会话「${movingSession?.title ?? move}」：在左侧点目标项目（再点一次确认）`), h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('migrate-cancel', () => setState({ moveSessionId: null })) }, '取消'))
-            : null,
-          store.gufaUnderlay === true
-            ? h('div', { className: 'pj-notice' }, h('span', null, '检测到古法编程覆盖层处于开启状态：本面板已置顶显示在它上面，面板内的点击由本插件处理。'), h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('gufa-hint-dismiss', () => setState({ gufaUnderlay: false })) }, '知道了'))
-            : null,
-          store.notice ? h('div', { className: 'pj-notice', role: 'status', 'aria-live': 'polite' }, h('span', null, store.notice), h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('notice-dismiss', () => setState({ notice: null })) }, '知道了')) : null,
-          store.error ? h('div', { className: 'pj-error', role: 'alert' }, store.error) : null,
-          h(FailureBanner, { projects }),
-          store.data?.journalError
-            ? h(
-                'div',
-                { className: 'pj-error' },
-                `进展数据文件读取失败，原文件已另存为 ${store.data.journalError.file}（当前显示空数据）。重启后仍会提示，直到用备份恢复或再次忽略；可在「设置 → 从备份恢复」里选一份备份恢复。`,
-                h(
-                  'button',
-                  {
-                    className: 'pj-btn ghost',
-                    type: 'button',
-                    // 会话内隐藏：服务端只丢内存标记，.corrupt-* 文件与日志保留；重启后仍会提示，直到用备份恢复。
-                    onClick: act('dismiss-error', async () => {
-                      await api('/api/journal/dismiss-error?confirm=1')
-                      await refresh()
-                    }),
-                  },
-                  '知道了',
+          h('div', { className: 'pj-bannerbar' }, headBanner, bannerList),
+          h(
+            'div',
+            { className: 'pj-grid' },
+            h(
+              'div',
+              { className: 'pj-rail' },
+              h('div', { className: 'pj-rail-search' }, h('input', { placeholder: '找项目…', 'aria-label': '找项目', value: store.railQuery ?? '', onChange: (event) => setState({ railQuery: event.target.value }) })),
+              h('div', { className: 'pj-rail-list' }, railProjects.map((project) => h('button', {
+                key: project.id,
+                className: `pj-rail-row ${selected?.id === project.id ? 'on' : ''}`,
+                type: 'button',
+                onClick: act('project-click', () => setState({ selectedProjectId: project.id, selectedPhaseId: null, panePage: 'phase', insTab: 'detail' })),
+              },
+                h('div', { className: 'pj-rail-t' }, project.title, project.locked === true ? h('span', { className: 'pj-chip', style: { marginLeft: 5 } }, '待归属') : null),
+                h('div', { className: 'pj-rail-m' },
+                  h('span', null, `${(project.phases ?? []).filter((item) => !item.deletedAt).length} 阶段`),
+                  problemOpenCount(project) > 0 ? h('span', { className: 'pj-rail-warn' }, `● ${problemOpenCount(project)} 未解决`) : null,
                 ),
+                move !== null && move !== undefined && project.id !== selected?.id
+                  ? h('span', {
+                      className: `pj-chip ${store.migrateTargetId === project.id ? 'on' : ''}`,
+                      style: { marginTop: 4 },
+                      onClick: (event) => { event.stopPropagation(); setState({ migrateTargetId: project.id }) },
+                    }, store.migrateTargetId === project.id ? '已选定' : '迁到这里')
+                  : null,
+              ))),
+              h('div', { className: 'pj-rail-foot' },
+                h('button', { className: 'pj-litem', type: 'button', style: { textAlign: 'left' }, onClick: act('page-trash', () => setState({ panePage: 'trash' })) }, '回收站'),
+                h('button', { className: 'pj-litem', type: 'button', style: { textAlign: 'left' }, onClick: act('page-hygiene', () => setState({ panePage: 'hygiene' })) }, '数据卫生'),
+                h('button', { className: 'pj-litem', type: 'button', style: { textAlign: 'left' }, onClick: act('page-settings', () => setState({ panePage: 'settings', settings: true })) }, '设置'),
+              ),
+            ),
+            h(
+              'div',
+              { className: 'pj-tl' },
+              h('div', { className: 'pj-tl-scroll' },
+                h('div', { className: 'pj-filters', style: { margin: '0 0 10px 24px' } },
+                  ...[['all', `全部 ${counts.all}`], ['active', `进行中 ${counts.active}`], ['done', `已完成 ${counts.done}`]].map(([key, label]) =>
+                    h('button', { key, className: `pj-chip pj-filter ${tlFilter === key ? 'on' : ''}`, type: 'button', onClick: act(`tl-filter-${key}`, () => setState({ tlFilter: key })) }, label)),
+                  h('button', { className: `pj-chip pj-filter ${store.tlOnlyOpen === true ? 'on' : ''}`, type: 'button', 'aria-pressed': store.tlOnlyOpen === true, onClick: act('tl-open-only', () => setState({ tlOnlyOpen: store.tlOnlyOpen !== true })) }, '只看未解决'),
+                ),
+                branchId !== 'main' ? h('div', { className: 'pj-tl-fold' }, h('span', null, `主线已走过 ${Math.max(0, (branch.fromSeq ?? 1) - 1)} 段 · 只读`), h('i')) : null,
+                visibleChain.length === 0
+                  ? h('div', { className: 'pj-empty2', style: { paddingLeft: 24 } }, query !== '' || tlFilter !== 'all' || store.tlOnlyOpen === true ? '当前筛选下没有阶段' : '这个分支还没有阶段：会话结束后会自动归纳，或点右上「新建阶段」手动记一条。')
+                  : visibleChain.map((item, index) => h('div', {
+                      key: `${item.prefix ? 'p' : 'b'}-${item.id}`,
+                      className: `pj-tl-node ${item.status} ${item.id === phase?.id ? 'on' : ''}`,
+                      onClick: act('phase-select', () => setPhase(item.id)),
+                    },
+                      h('span', { className: 'pj-tl-knob' }),
+                      h('div', { className: 'pj-tl-card' },
+                        h('div', { className: 'pj-tl-h' },
+                          h('span', { className: 'pj-tl-idx' }, String(index + 1).padStart(2, '0')),
+                          h('span', { className: 'pj-tl-title' }, item.title),
+                          h('span', { className: `pj-chip ${item.status}` }, item.status === 'done' ? '已完成' : item.status === 'active' ? '进行中' : '计划中'),
+                          item.redoOf ? h('span', { className: 'pj-chip redo' }, '↺') : null,
+                          item.prefix ? h('span', { className: 'pj-chip' }, '主线') : null,
+                          h('span', { className: 'pj-spacer', style: { flex: 1 } }),
+                          h('span', { className: 'pj-chip' }, timeText(item.startedAt)),
+                        ),
+                        h('div', { className: 'pj-tl-sum' }, item.summary ?? '（还没有总结）'),
+                        h('div', { className: 'pj-tl-badges' },
+                          evidencedProblems(item).filter((problem) => problem.status === 'open').length > 0
+                            ? h('span', { className: 'pj-tl-badge warn' }, `${evidencedProblems(item).filter((problem) => problem.status === 'open').length} 未解决`)
+                            : null,
+                          (item.nextSteps ?? []).length > 0 ? h('span', { className: 'pj-tl-badge' }, `${item.nextSteps.length} 下一步`) : null,
+                          (item.artifacts ?? []).length > 0 ? h('span', { className: 'pj-tl-badge' }, `${item.artifacts.length} 产物`) : null,
+                          (item.sessions ?? []).length > 0 ? h('span', { className: 'pj-tl-badge' }, `${item.sessions.length} 会话`) : null,
+                        ),
+                      ),
+                    )),
+              ),
+            ),
+            h(Inspector, { project: selected, data, phase, branch, panePage, insTab, chain }),
+          ),
+          h(
+            'div',
+            { className: 'pj-foot' },
+            h('span', null, data?.migration?.available === true ? '迁移：可用' : `迁移：不可用（${data?.migration?.source ?? 'unknown'}）`),
+            h('span', null, '每个项目只读自己的会话，跨项目不混'),
+            h('span', { style: { flex: 1 } }),
+            h('span', null, data?.generatedAt ? `更新于 ${new Date(data.generatedAt).toLocaleTimeString('zh-CN')}` : ''),
+          ),
+          h(MigratePicker, { project: selected, data }),
+          move !== null && move !== undefined && store.migrateTargetId !== null
+            ? h('div', { className: 'pj-confirmbar' },
+                h('span', null, `把「${(selected?.sessions ?? []).find((row) => row.sessionId === move)?.title ?? move}」迁到「${(data.projects ?? []).find((item) => item.id === store.migrateTargetId)?.title ?? ''}」？`),
+                h('span', { className: 'pj-spacer', style: { flex: 1 } }),
+                h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('migrate-abort', () => setState({ moveSessionId: null, migrateTargetId: null })) }, '取消'),
+                h('button', { className: 'pj-btn primary', type: 'button', onClick: act('migrate-confirm', () => {
+                  const target = store.migrateTargetId
+                  setState({ moveSessionId: null, migrateTargetId: null, migratePickerOf: null })
+                  void api('/api/migrate', { sessionId: move, targetProjectId: target })
+                    .then(() => refresh({ force: true }))
+                    .then(() => setState({ notice: '已迁移会话' }))
+                    .catch((error) => setState({ error: String(error?.message ?? error) }))
+                }) }, '确认迁移'),
               )
             : null,
           h(ConfirmModal),
           selected !== null ? h(AttachModal, { project: selected }) : null,
           selected !== null ? h(PhaseCreateModal, { project: selected }) : null,
           selected !== null && typeof store.editingPhaseId === 'string' ? h(PhaseEditModal, { project: selected }) : null,
-          h(
-            'div',
-            { className: 'pj-body' },
-            h(
-              'div',
-              { className: 'pj-left' },
-              projects.map((project) =>
-                h(
-                  'div',
-                  {
-                    key: project.id,
-                    className: `pj-proj ${selected?.id === project.id ? 'active' : ''} ${move !== null && selected?.id === project.id ? 'picked' : ''}`,
-                    onClick: act('project-click', () => onProjectClick(project)),
-                  },
-                  h(
-                    'div',
-                    { className: 'pj-proj-title' },
-                    project.title,
-                    project.locked === true ? h('span', { className: 'pj-chip' }, '待归属') : null,
-                    project.phases.length > 0 ? h('span', { className: 'pj-dot' }) : null,
-                  ),
-                  h(
-                    'div',
-                    { className: 'pj-proj-meta' },
-                    h('span', null, `${project.phases.length} 阶段`),
-                    (project.branches ?? []).length > 1 ? h('span', null, `${project.branches.length - 1} 分支`) : null,
-                    h('span', null, `${project.sessions.length} 会话`),
-                    problemOpenCount(project) > 0
-                      ? h('span', { title: inferredOpenCount(project) > 0 ? `另有 ${inferredOpenCount(project)} 条推测未计入` : undefined }, `${problemOpenCount(project)} 未解决${inferredOpenCount(project) > 0 ? ` · 含推测 ${inferredOpenCount(project)}` : ''}`)
-                      : null,
-                    nextCount(project) > 0 ? h('span', { className: 'pj-proj-next' }, `下一步 ${nextCount(project)}`) : null,
-                  ),
-                ),
-              ),
-            ),
-            h('div', { className: 'pj-main' }, store.loading && data === null ? h('div', { className: 'pj-empty' }, '加载中…') : selected === null ? h('div', { className: 'pj-empty' }, '还没有项目。') : (store.query ?? '').trim() !== '' ? h(SearchResults, { projects, query: store.query }) : h(ProjectDetail, { project: selected, data })),
-          ),
-          h(
-            'div',
-            { className: 'pj-foot' },
-            h('span', null, data?.migration?.available === true ? '迁移：可用（live workspace 域）' : `迁移：不可用（${data?.migration?.source ?? 'unknown'}）`),
-            h('span', null, `提示：每个项目只看自己的会话，跨项目不混`),
-            h('span', { className: 'pj-spacer', style: { flex: 1 } }),
-            h('span', null, data?.generatedAt ? `更新于 ${new Date(data.generatedAt).toLocaleTimeString('zh-CN')}` : ''),
-          ),
+          store.forkDraft !== null && store.forkDraft !== undefined ? h(ForkDialog, { project: selected, close: () => setState({ forkDraft: null }) }) : null,
         ),
       )
+    }
+
+    // 0.5.0：右栏检视器。中栏只负责扫，内容与修改都在这里。
+    // 0.5.0：迁移是「先选会话、再选目标、最后确认」。会话列表只列当前项目与「未归属」里
+    // 还没隐藏的会话，避免把已裁剪上下文的会话又搬出来。
+    function MigratePicker({ project, data }) {
+      if (project === undefined || project === null) return null
+      if (store.migratePickerOf !== project.id || store.moveSessionId !== null) return null
+      const unassigned = (data?.projects ?? []).find((item) => item.id === 'unassigned')
+      const rows = [...(project.sessions ?? []), ...(unassigned?.sessions ?? [])].filter((row) => row.hidden !== true)
+      const q = (store.migrateQuery ?? '').trim()
+      const list = rows.filter((row) => q === '' || `${row.title ?? ''} ${row.sessionId}`.includes(q))
+      const close = () => setState({ migratePickerOf: null, migrateQuery: '' })
+      return h('div', { className: 'pj-settings', style: { left: 12, right: 'auto', top: 58, maxHeight: '62%', overflow: 'auto', zIndex: 7 } },
+        h('div', { className: 'pj-row' }, h('span', { style: { fontWeight: 600 } }, '先选一条会话'), h('span', { className: 'pj-spacer', style: { flex: 1 } }), h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('migrate-cancel', close) }, '取消')),
+        h('input', { placeholder: '搜标题或 sessionId…', 'aria-label': '搜会话', value: store.migrateQuery ?? '', onChange: (event) => setState({ migrateQuery: event.target.value }) }),
+        h('div', { className: 'pj-sub' }, `来源：${project.title}${(unassigned?.sessions ?? []).length > 0 ? ` + 未归属` : ''} · ${rows.length} 条`),
+        rows.length === 0
+          ? h('div', { className: 'pj-sub' }, '这个项目还没有会话可迁。')
+          : list.map((row) => h('button', {
+              key: row.sessionId,
+              className: 'pj-litem',
+              type: 'button',
+              style: { width: '100%' },
+              onClick: act('migrate-pick', () => setState({ moveSessionId: row.sessionId, migratePickerOf: null, migrateQuery: '', migrateTargetId: null })),
+            },
+              h('span', { style: { flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, row.title ?? row.sessionId),
+              row.projectId === 'unassigned' || project.id === 'unassigned' ? h('span', { className: 'pj-chip' }, '未归属') : null,
+            )),
+        h('div', { className: 'pj-sub' }, '选完在左栏点目标项目的「迁到这里」，底部会再确认一次。'),
+      )
+    }
+
+    function Inspector({ project, data, phase, branch, panePage, insTab, chain }) {
+      const openSession = (sessionId) => { void openSessionById(sessionId) }
+      if (project === null) return h('div', { className: 'pj-ins' }, h('div', { className: 'pj-ins-body' }, h('div', { className: 'pj-empty2' }, '还没有项目')))
+      if (panePage === 'trash') {
+        return h('div', { className: 'pj-ins' },
+          h('div', { className: 'pj-ins-head' }, h('span', { className: 'pj-rt', style: { fontSize: 12.5, fontWeight: 600 } }, '回收站'), h('span', { className: 'pj-spacer', style: { flex: 1 } }), h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('page-back', () => setState({ panePage: 'phase' })) }, '返回')),
+          h('div', { className: 'pj-ins-body' }, h(Trash, { project })),
+        )
+      }
+      if (panePage === 'hygiene') {
+        return h('div', { className: 'pj-ins' },
+          h('div', { className: 'pj-ins-head' }, h('span', { style: { fontSize: 12.5, fontWeight: 600 } }, '数据卫生'), h('span', { className: 'pj-spacer', style: { flex: 1 } }), h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('page-back', () => setState({ panePage: 'phase' })) }, '返回')),
+          h('div', { className: 'pj-ins-body' }, h(DataHygiene, null)),
+        )
+      }
+      if (panePage === 'settings') {
+        return h('div', { className: 'pj-ins' },
+          h('div', { className: 'pj-ins-head' }, h('span', { style: { fontSize: 12.5, fontWeight: 600 } }, '设置'), h('span', { className: 'pj-spacer', style: { flex: 1 } }), h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('page-back', () => setState({ panePage: 'phase' })) }, '返回')),
+          h('div', { className: 'pj-ins-body' }, h(Settings, { data, close: () => setState({ panePage: 'phase', settings: false }) })),
+        )
+      }
+      if (phase === null) return h('div', { className: 'pj-ins' }, h('div', { className: 'pj-ins-body' }, h('div', { className: 'pj-empty2' }, '从左栏选一个项目，或建一个新阶段')))
+      const readOnly = phase.prefix === true
+      const artifacts = Array.isArray(phase.artifactStatus) ? phase.artifactStatus : (phase.artifacts ?? []).map((name) => ({ name, exists: true }))
+      const evidenced = evidencedProblems(phase)
+      const inferred = inferredProblems(phase)
+      const nexts = Array.isArray(phase.nextSteps) ? phase.nextSteps : []
+      const tabs = [
+        ['detail', '详情'],
+        ['problems', `问题 ${evidenced.length}`],
+        ['next', `下一步 ${nexts.length}`],
+        ['artifacts', `产物 ${artifacts.length}`],
+        ['sessions', `会话 ${phase.sessions.length}`],
+        ['revisions', '修订'],
+      ]
+      const remove = () => askConfirm(`把阶段「${phase.title}」移入回收站，并裁剪它的真实上下文？已登记的产物会移出项目目录，相关会话从项目列表隐藏且不再自动归纳；会话日志本身不删，可在回收站恢复。`, async () => {
+        await api('/api/phase', { projectId: project.id, phaseId: phase.id, action: 'delete' })
+        await refresh({ force: true })
+        setState({ selectedPhaseId: null })
+      })
+      let body = null
+      if (insTab === 'detail') {
+        body = h('div', null,
+          h('div', { className: 'pj-kv' },
+            h('span', null, timeText(phase.startedAt) || '—'),
+            h('span', null, `· 作者 ${phase.manual === true ? '你' : '模型'}`),
+            h('span', null, `· ${branch.title}`),
+            phase.revisionCount > 0 ? h('span', null, `· 手改 ${phase.revisionCount}`) : null,
+          ),
+          h(SummaryMetaLine, { phase }),
+          h('div', { className: 'pj-sec' },
+            h('div', { className: 'pj-sec-h' }, '阶段总结'),
+            phase.summary ? h('div', { className: 'pj-p', style: { whiteSpace: 'pre-wrap', color: 'var(--pj-text-secondary)' } }, phase.summary) : h('div', { className: 'pj-empty2' }, '还没有总结'),
+          ),
+          evidenced.length > 0
+            ? h('div', { className: 'pj-sec' }, h('div', { className: 'pj-sec-h' }, '问题'), evidenced.slice(0, 3).map((problem) => h('div', { className: `pj-item`, key: problem.id }, h('div', { className: 'pj-item-t' }, problem.statement), problem.resolution ? h('div', { className: 'pj-item-s' }, `处理：${problem.resolution}`) : null)))
+            : null,
+          readOnly ? null : h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
+            h('button', { className: 'pj-btn', type: 'button', onClick: act('phase-edit-open', () => setState({ editingPhaseId: phase.id, editingPhaseProjectId: project.id })) }, '改阶段'),
+            h('button', { className: 'pj-btn', type: 'button', onClick: act('fork-open', () => { void startForkOf(project, phase) }) }, '从这开分支'),
+            h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('phase-delete-confirm', remove) }, '删除阶段'),
+          ),
+        )
+      }
+      if (insTab === 'problems') {
+        body = h('div', null,
+          evidenced.map((problem) => h('div', { className: 'pj-item', key: problem.id },
+            store.editingProblemId === problem.id
+              ? h(ProblemForm, { project, phase, problem, done: () => setState({ editingProblemId: null }) })
+              : h('div', null,
+                  h('div', { className: 'pj-item-t' }, problem.statement),
+                  problem.quote ? h('div', { className: 'pj-quote', style: { marginTop: 4 } }, `「${problem.quote}」`) : null,
+                  problem.resolution ? h('div', { className: 'pj-item-s' }, `处理：${problem.resolution}`) : null,
+                  readOnly ? null : h('div', { className: 'pj-phase-actions' },
+                    h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('problem-edit-open', () => setState({ editingProblemId: problem.id })) }, '修正'),
+                    h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('problem-delete-confirm', () => askConfirm('删除这条问题记录？不可撤销。', async () => { await api('/api/problem', { projectId: project.id, phaseId: phase.id, problemId: problem.id, action: 'delete' }); await refresh({ force: true }) })) }, '删除'),
+                  ),
+                ),
+          )),
+          inferred.length > 0 ? h('div', { className: 'pj-note' }, `另有 ${inferred.length} 条无原话的推测，不计入未解决`) : null,
+          readOnly ? null : h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('problem-create-open', () => setState({ problemDraftPhaseId: phase.id })) }, '+ 补一条问题记录'),
+          store.problemDraftPhaseId === phase.id ? h(ProblemForm, { project, phase, done: () => setState({ problemDraftPhaseId: null }) }) : null,
+        )
+      }
+      if (insTab === 'next') {
+        body = h('div', null,
+          nexts.length === 0 ? h('div', { className: 'pj-empty2' }, '还没有下一步') : nexts.map((step, index) => h('div', { className: 'pj-item', key: index, style: { display: 'flex', gap: 8, alignItems: 'flex-start' } },
+            h('span', { className: 'pj-item-t', style: { flex: 1 } }, `${index + 1}. ${step}`),
+            readOnly ? null : h('button', { className: 'pj-btn ghost', type: 'button', title: '移除', onClick: act('next-remove', async () => { const rest = nexts.filter((item, i) => i !== index); await api('/api/phase', { projectId: project.id, phaseId: phase.id, nextSteps: rest.join('|') }); await refresh({ force: true }) }) }, '×'),
+          )),
+          readOnly ? null : (store.stepDraft === phase.id
+            ? h(StepForm, { project, phase, done: () => setState({ stepDraft: null }) })
+            : h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('step-open', () => setState({ stepDraft: phase.id })) }, '+ 加一条下一步')),
+        )
+      }
+      if (insTab === 'artifacts') {
+        body = h('div', null,
+          artifacts.length === 0 ? h('div', { className: 'pj-empty2' }, '没有登记的产物') : artifacts.map((entry, index) => h('div', { className: 'pj-item', key: index, style: { display: 'flex', gap: 8, alignItems: 'center' } },
+            h('span', { className: 'pj-item-t', style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: entry.name }, `📄 ${entry.name}`),
+            h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('artifact-open', (event) => { event.stopPropagation(); return openArtifact(project, entry.name) }) }, entry.exists === true ? '打开' : '已丢失'),
+          )),
+          readOnly ? null : h('div', { style: { display: 'flex', gap: 6 } },
+            h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('rescan-artifacts', async () => { const result = await api('/api/phase/rescan', { projectId: project.id, phaseId: phase.id }); setState({ notice: (result.added ?? []).length > 0 ? `补记 ${result.added.length} 个产物` : '没有发现新产物' }); await refresh({ force: true }) }) }, '重扫产物'),
+          ),
+        )
+      }
+      if (insTab === 'sessions') {
+        body = h('div', null,
+          phase.sessions.length === 0 ? h('div', { className: 'pj-empty2' }, '这个阶段还没有会话') : phase.sessions.map((sessionId) => {
+            const rec = (project.sessions ?? []).find((item) => item.sessionId === sessionId)
+            return h('div', { className: 'pj-item', key: sessionId, style: { display: 'flex', gap: 8, alignItems: 'center' } },
+              h('span', { className: 'pj-item-t', style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: rec?.cwd ?? '' }, rec?.title ?? `未命名会话 · ${String(sessionId).slice(-8)}`),
+              h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('session-open', () => openSession(sessionId)) }, '打开'),
+            )
+          }),
+        )
+      }
+      if (insTab === 'revisions') {
+        body = h(RevisionList, { project, phase })
+      }
+      return h(
+        'div',
+        { className: 'pj-ins' },
+        h('div', { className: 'pj-ins-head' },
+          h('span', { style: { fontSize: 12.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, phase.title),
+          h('span', { className: 'pj-spacer', style: { flex: 1 } }),
+          h('span', { className: 'pj-chip' }, branch.title),
+        ),
+        h('div', { className: 'pj-ins-tabs' }, tabs.map(([key, label]) => h('button', { key, className: `pj-ins-tab ${insTab === key ? 'on' : ''}`, type: 'button', onClick: act(`ins-tab-${key}`, () => setState({ insTab: key })) }, label))),
+        h('div', { className: 'pj-ins-body' }, body),
+        h('div', { className: 'pj-ins-foot' },
+          h('button', { className: 'pj-btn', type: 'button', onClick: act('phase-edit-open', () => setState({ editingPhaseId: phase.id, editingPhaseProjectId: project.id })) }, '改阶段'),
+          h('button', { className: 'pj-btn', type: 'button', onClick: act('fork-open', () => { void startForkOf(project, phase) }) }, '从这开分支'),
+          h('span', { style: { flex: 1 } }),
+          phase.sessions.length > 0 ? h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('session-open-first', () => openSession(phase.sessions[phase.sessions.length - 1])) }, '打开会话') : null,
+        ),
+      )
+    }
+
+    async function startForkOf(project, phase) {
+      try {
+        const seed = await api('/api/branch/seed', { projectId: project.id, phaseId: phase.id })
+        setState({ forkDraft: { projectId: project.id, phaseId: phase.id, phaseTitle: phase.title, isRedo: phase.redoOf !== null && phase.redoOf !== undefined, fromSeq: seed.fromSeq, title: seed.title, prompt: seed.prompt, context: seed.context ?? null } })
+      } catch (error) {
+        beacon('fork-error:' + String(error?.message ?? error).slice(0, 80))
+        setState({ error: String(error?.message ?? error) })
+      }
+    }
+
+    async function exportMarkdownOf(project) {
+      if (project === null) return
+      try {
+        const base = await ensureBase()
+        const response = await fetch(`${base}/api/export?projectId=${encodeURIComponent(project.id)}`)
+        const text = await response.text()
+        try { if (navigator?.clipboard?.writeText) await navigator.clipboard.writeText(text) } catch {}
+        const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' })
+        const url = URL.createObjectURL(blob)
+        const anchor = document.createElement('a')
+        anchor.href = url
+        anchor.download = `${String(project.title).replace(/[\\/:*?"<>|]/g, '_')}-进展.md`
+        document.body.appendChild(anchor)
+        anchor.click()
+        anchor.remove()
+        setTimeout(() => URL.revokeObjectURL(url), 4000)
+        setState({ notice: '已导出 Markdown' })
+      } catch (error) {
+        setState({ error: String(error?.message ?? error) })
+      }
+    }
+
+    async function toggleReprojectOf(project, data) {
+      if (project === null) return
+      const busy = data?.reproject?.running === true && data?.reproject?.projectId === project.id
+      try {
+        await api('/api/reproject', { projectId: project.id, action: busy ? 'stop' : 'start', rebuild: (project.phases ?? []).length === 0 ? 1 : 0 })
+        await refresh({ force: true })
+      } catch (error) {
+        setState({ error: String(error?.message ?? error) })
+      }
     }
 
     // A render error inside a slot must never take the surrounding app down:
@@ -2611,7 +2430,7 @@ window.__ModuleLoader__.load({
       } catch (error) {
         note(`ui-workspace-error:${String(error).slice(0, 60)}`)
       }
-      note('client-v26')
+      note('client-v27')
       window.__pjDebug = { open: () => openPanel(), close: () => closePanel(), store, stats: () => store.stats }
       const mount = (slot, definition, component) => {
         try {
