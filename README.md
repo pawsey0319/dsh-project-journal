@@ -363,7 +363,7 @@ Project Journal keeps a durable, per-project chain of phases, next steps and pro
 
 - Package: `@pawsey0319/dsh-project-journal` (v0.5.0, MIT; distributed via GitHub Releases, not npm)
 - Install it from the DSH Plugin Manager using a local checkout (or the release tarball), then enable the bundle; it registers a sidebar entry, a per-session move button and a full-screen overlay panel. Local development can link the repo into `~/.dsh/profiles/<profile>/package.json` and add it to `dsh.profile.bundles`. There is intentionally no npm distribution path.
-- Action clicks go through a single `act()` helper (85 call sites) that emits a `ui:<action>` beacon and routes failures to the panel error bar instead of throwing into the host.
+- Action clicks go through a single `act()` helper (79 call sites) that emits a `ui:<action>` beacon and routes failures to the panel error bar instead of throwing into the host.
 - Data stays in `~/.dsh/project-journal/journal.json`; summaries are produced by the model configured in DSH, and the model never receives file contents or images.
 - Writes use GET + query on purpose: DSH prefix routes only serve `GET`/`HEAD`. The surface is unauthenticated, so never expose the DSH port publicly.
 - Verify with `npm test` and `node --check index.js client.js journal-store.js`, then `curl $B/x-journal/api/health`.

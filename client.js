@@ -562,6 +562,28 @@ window.__ModuleLoader__.load({
 .pj-inferred-note{font-size:10px;opacity:.75;margin-right:4px}
 .pj-badge{font-size:10px;min-width:15px;height:15px;padding:0 4px;border-radius:999px;background:var(--pj-warn);color:var(--pj-on-warn);display:inline-flex;align-items:center;justify-content:center;font-weight:600}
 /* ---------- 0.5.0 三栏：左项目 / 中时间线 / 右检视 ---------- */
+/* Portal 不依赖宿主的 reset；百分比宽度必须包含 padding / border。 */
+.pj-root,.pj-root *,.pj-root *::before,.pj-root *::after{box-sizing:border-box}
+.pj-root{line-height:1.55;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.pj-root button,.pj-root input,.pj-root textarea,.pj-root select{font-family:inherit;min-width:0;max-width:100%}
+.pj-panel2{min-width:0;min-height:0}
+.pj-panel2 .pj-btn{flex-shrink:0;white-space:normal}
+.pj-panel2 .pj-row,.pj-panel2 .pj-phase-actions,.pj-panel2 .pj-trash-row,.pj-panel2 .pj-backup-row{flex-wrap:wrap}
+.pj-panel2 .pj-row > .pj-input{flex:1 1 120px;width:auto}
+.pj-panel2 .pj-spacer{min-width:0}
+.pj-panel2 .pj-chip{max-width:100%;overflow-wrap:anywhere}
+.pj-panel2 .pj-foot{flex:0 0 auto}
+.pj-panel2 .pj-modal{padding:16px;overflow:hidden}
+.pj-panel2 .pj-modal-box{max-width:100%;max-height:100%;overflow:auto;overflow-wrap:anywhere;flex-shrink:1}
+.pj-panel2 .pj-modal-box > *{flex-shrink:0}
+.pj-panel2 .pj-settings{max-width:calc(100% - 24px);max-height:calc(100% - 70px);overflow:auto;overflow-wrap:anywhere}
+/* 设置页是右栏内容，不再复用菜单 / 迁移选择器的绝对定位浮层。 */
+.pj-settings-page{display:flex;flex-direction:column;gap:9px;min-width:0}
+.pj-settings-page .pj-backups{max-height:none;overflow:visible}
+.pj-panel2 .pj-p,.pj-panel2 .pj-item,.pj-panel2 .pj-sub,.pj-panel2 .pj-quote,.pj-panel2 .pj-rev-body,.pj-panel2 .pj-trash-title{min-width:0;overflow-wrap:anywhere}
+.pj-p{line-height:1.75}
+.pj-panel2 .pj-item > *{min-width:0}
+.pj-panel2 .pj-confirmbar{position:static;flex:0 0 auto;flex-wrap:wrap;max-height:18%;margin:6px 12px 10px;overflow:auto;overflow-wrap:anywhere}
 .pj-panel2{width:min(1360px,96vw);height:min(880px,92vh);display:flex;flex-direction:column;border-radius:14px;overflow:hidden;background:var(--pj-surface);color:var(--pj-text);border:1px solid var(--pj-border);box-shadow:0 24px 80px rgba(0,0,0,.55);font-size:13px}
 .pj-top{flex:0 0 54px;display:flex;align-items:center;gap:9px;padding:0 13px;border-bottom:1px solid var(--pj-border)}
 .pj-top-title{font-size:15px;font-weight:600;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -573,7 +595,11 @@ window.__ModuleLoader__.load({
 .pj-top-search:focus{border-color:var(--pj-accent)}
 .pj-top-status{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--pj-text-tertiary);cursor:default}
 .pj-top-dot{width:7px;height:7px;border-radius:50%;background:var(--pj-success)}
-.pj-grid{flex:1;min-height:0;display:grid;grid-template-columns:224px minmax(0,1fr) 360px}
+.pj-grid{flex:1 1 0;min-height:0;min-width:0;display:flex;overflow:hidden}
+.pj-grid > *{min-width:0;min-height:0;overflow:hidden}
+.pj-grid > .pj-rail{flex:0 0 224px}
+.pj-grid > .pj-tl{flex:1 1 0}
+.pj-grid > .pj-ins{flex:0 0 360px}
 .pj-rail{border-right:1px solid var(--pj-border);display:flex;flex-direction:column;min-height:0}
 .pj-litem{appearance:none;border:0;background:transparent;color:var(--pj-text-secondary);font-size:12px;padding:6px 8px;border-radius:7px;cursor:pointer;display:flex;align-items:center;gap:7px}
 .pj-litem:hover{background:var(--pj-hover);color:var(--pj-text)}
@@ -629,14 +655,69 @@ window.__ModuleLoader__.load({
 .pj-item{border:1px solid var(--pj-border-l1);border-radius:8px;padding:7px 8px;margin-bottom:5px;background:var(--pj-surface-platform)}
 .pj-item-t{font-size:12.5px}
 .pj-item-s{color:var(--pj-text-secondary);font-size:11.5px;margin-top:3px}
+/* 固定外框、独立滚动：标题栏 / 横幅 / 页脚不与正文争抢最小内容高度。 */
+.pj-top{flex:0 0 auto;min-height:54px;flex-wrap:wrap;padding:10px 13px;position:relative}
+.pj-top > .pj-icon,.pj-top > .pj-btn{flex-shrink:0}
+.pj-top-title{min-width:0;flex:0 1 220px}
+.pj-top-tabs{min-width:0;flex:1 1 140px;flex-wrap:wrap;max-height:52px;overflow:auto}
+.pj-top-tab{flex-shrink:0;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.pj-top-search{flex:0 1 190px;min-width:120px}
+.pj-top-status{flex-shrink:0;white-space:nowrap}
+.pj-rail-search,.pj-rail-foot{flex-shrink:0}
+.pj-rail-list,.pj-tl-scroll,.pj-ins-body{flex:1 1 0;min-height:0;min-width:0;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;overflow-wrap:anywhere}
+.pj-rail-m{flex-wrap:wrap}
+.pj-tl-h{flex-wrap:wrap;gap:5px}
+.pj-tl-title{min-width:0;flex:1 1 100px;white-space:normal;overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2}
+.pj-tl-h > .pj-chip{flex-shrink:0}
+.pj-tl-sum{white-space:normal;overflow-wrap:anywhere;line-height:1.6;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2}
+.pj-tl-badge{max-width:100%;overflow-wrap:anywhere}
+.pj-ins-head{flex:0 0 auto;min-height:42px;padding:8px 11px;min-width:0}
+.pj-ins-head > :first-child{min-width:0}
+.pj-ins-head > .pj-chip{max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pj-ins-tabs{flex:0 0 auto;flex-wrap:wrap;overflow:visible}
+.pj-ins-tab{flex-shrink:0}
+.pj-ins-foot{flex:0 0 auto;min-height:50px;flex-wrap:wrap;padding:8px 11px}
+.pj-bannerbar{flex:0 0 auto;max-height:18%;overflow:auto;overflow-wrap:anywhere}
+.pj-bannerbar .pj-banner{flex-wrap:wrap;padding:8px 10px;gap:6px 10px}
+.pj-bannerbar .pj-banner > span:first-child{flex:1 1 200px;min-width:0}
+.pj-banner-more{flex-shrink:0}
+@media(max-width:1100px){
+  .pj-grid > .pj-rail{flex-basis:160px}
+  .pj-grid > .pj-ins{flex-basis:300px}
+  .pj-top-title{flex-basis:160px;max-width:180px}
+  .pj-top-search{flex-basis:160px}
+  .pj-tl-scroll{padding:10px 10px 18px}
+  .pj-tl-node{padding-left:18px}
+  .pj-tl-card{padding:8px}
+  .pj-tl-sum,.pj-tl-badges{padding-left:0}
+}
+@media(max-width:850px){
+  .pj-grid > .pj-rail{flex-basis:144px}
+  .pj-grid > .pj-ins{flex-basis:280px}
+  .pj-top{gap:7px}
+  .pj-top-tabs{flex-basis:180px}
+  .pj-top-search{flex-basis:170px}
+  .pj-panel2 .pj-foot{gap:4px 12px;padding:5px 12px}
+}
+/* 再窄也保留三块内容；纵向堆叠比把时间线挤成一个字宽更可读。 */
+@media(max-width:650px){
+  .pj-grid{flex-direction:column;overflow-y:auto}
+  .pj-grid > .pj-rail,.pj-grid > .pj-tl,.pj-grid > .pj-ins{flex:0 0 auto;overflow:visible;border:0;border-bottom:1px solid var(--pj-border)}
+  .pj-rail-list{flex:auto;max-height:140px}
+  .pj-tl-scroll,.pj-ins-body{flex:auto;overflow:visible}
+  .pj-rail-foot{flex-direction:row;flex-wrap:wrap}
+}
 `
 
     function ensureStyle() {
-      if (document.getElementById('pj-style') !== null) return
-      const style = document.createElement('style')
+      // HMR reloads this module but the page keeps the <style> element from the
+      // previous version; returning early would leave 0.4.0 CSS under 0.5.0 markup.
+      const existing = document.getElementById('pj-style')
+      if (existing !== null && existing.textContent === CSS) return
+      const style = existing !== null ? existing : document.createElement('style')
       style.id = 'pj-style'
       style.textContent = CSS
-      document.head.appendChild(style)
+      if (existing === null) document.head.appendChild(style)
     }
 
     const Icon = ({ size = 16 }) =>
@@ -1165,7 +1246,7 @@ window.__ModuleLoader__.load({
       if (backups === null) void loadBackups()
       return h(
         'div',
-        { className: 'pj-settings', role: 'dialog', 'aria-label': '项目进展设置' },
+        { className: 'pj-settings-page', role: 'dialog', 'aria-label': '项目进展设置' },
         h('div', { className: 'pj-label' }, '摘要模型 provider / model（留空自动选择）'),
         h('div', { className: 'pj-row' },
           h('input', { className: 'pj-input', value: provider, placeholder: 'provider id', onChange: (event) => setProvider(event.target.value) }),
