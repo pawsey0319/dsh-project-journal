@@ -128,7 +128,7 @@ mkdir -p dsh-project-journal && tar -xzf pj.tgz -C dsh-project-journal --strip-c
 ```
 
 然后按**方式 A** 用 `~/.dsh-plugins/dsh-project-journal` 的绝对路径安装，或按**方式 B** `link:` 进 profile。
-压缩包是发布产物（`files[]` 内的 12 个文件），不含 `node_modules`、`docs/`、`test/` 之外的开发依赖；要跑单测请用方式 C 的 clone。
+压缩包是发布产物（`files[]` 内的 12 个文件：三个 JS、`locale/`、`test/`、README、CHANGELOG、LICENSE、`package.json`、`cordis.patch.yml`），不含 `node_modules` 与 `docs/`；不需要开发依赖，解包后可直接 `node --test test/*.test.mjs`。
 
 ### 方式 C：从 GitHub clone 后安装
 
