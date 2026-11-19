@@ -56,94 +56,48 @@ DSH 的会话是按工作目录组织的，但真实工作往往跨目录：调�
 
 ## 安装
 
-### 前置条件
+只有两条路线：会用命令行的走路线一，不会的走路线二。**都不需要 npm。**
 
-- DSH 桌面版或 Web 版，且当前 release 支持 Web client 插件（插件产物必须与宿主 boot release 一致，不一致时页面只会提示刷新）；
-- Node.js >= 20；
-- 插件会用宿主自带的 `webServer`、`storageDomain`、`sessionQuery`、`llm`、`sessionController`、`workspaceController`（按需）与客户端 `slots`，无需额外安装；
-- 插件会调用宿主模型做会话归纳；模型未就绪时只有「手动记录 / 迁移 / 分支」可用，自动归纳会跳过。
+### 路线一：一行命令（要 `dsh` CLI）
 
-### 方式 A：插件管理器安装（本地路径 / link，推荐）
+```bash
+dsh plugin --profile web add github:pawsey0319/dsh-project-journal
+```
 
-> **本包暂不通过 npm 分发**（npm 侧有 2FA / 组织策略限制，本项目也不会为此开例外）。因此**不要**用 `plugin_manager action=install_bundle target="@pawsey0319/dsh-project-journal@版本号"` 这种 npm 版本号安装——那条路会 404。当前可用的安装路线：
->
-> 1. **方式 C** `git clone` 本仓库，再按本节用本地绝对路径安装；
-> 2. **方式 B** 把 clone 目录 `link:` 进 profile；
-> 3. **方式 D** 下载 GitHub Release 里的 `dsh-project-journal-<版本>.tgz`，解包后按本节本地路径安装（不依赖 git、不依赖 npm）。
->
-> 版本升级同样走 ①/②/③：换 tag 或换 tgz，再 disable → enable 一次。
+- 桌面客户端把 `--profile web` 换成 `--profile desktop`。
+- 这条命令会拉 GitHub 仓库、装进 profile、把 bundle 加进 `dsh.profile.bundles`。
+- 装完**重启 DeepSeek Harness**，侧边栏底部出现「进展」按钮即成功。
 
-本地路径安装（把路径换成 clone 后的仓库绝对路径）：
+> 本机是桌面 App、PATH 里没有 `dsh` CLI 的话，`dsh plugin ...` 会报 command not found。那就用路线二，效果一样。
+
+### 路线二：把下面这段话发给任意 DSH agent（不需要命令行）
+
+复制整段，粘进 DeepSeek Harness 的任意会话发送即可。agent 会自己下载、解包、安装、自检。
 
 ```text
-plugin_manager action=install_bundle target="/绝对路径/dsh-project-journal"
-# 返回 application:"applied" 才算真正生效；不是 applied 时按其 nextStep 处理
+帮我安装 DSH 插件 dsh-project-journal（项目进展）。
+
+1. 打开 https://github.com/pawsey0319/dsh-project-journal/releases ，下载最新一个
+   dsh-project-journal-<版本>.tgz 到临时目录并解包（解包后能看到 package.json、
+   index.js、client.js、cordis.patch.yml）。
+2. 用 plugin_manager 的 install_bundle，target 传解包后的目录绝对路径。
+   返回 application 必须是 "applied"；不是的话按它给的 nextStep 处理。
+3. 装完重启 DeepSeek Harness。
+4. 确认侧边栏底部出现「进展」按钮；没有就检查插件是否启用、bundle 是否在
+   dsh.profile.bundles 里。
+
+约束：不要用 npm / pnpm 安装；不要改 app.asar；不要手工编辑
+~/.dsh/profiles/*/package.json 里的依赖，交给 plugin_manager。
 ```
 
-GUI 的 Plugins 页等价。插件包自带 bundle 配置补丁（`cordis.patch.yml`），装好后**启用该 bundle** 才会挂载三个槽位。
+装好后**重启一次**（Host 半是 Node 代码，热替换不生效）；只改 `client.js` 的版本刷新窗口即可。
 
-### 方式 B：手动 link 到 profile（开发用）
+当前版本资产（可直接下载，agent 也可以从这里取）：
+<https://github.com/pawsey0319/dsh-project-journal/releases/download/v0.5.1/dsh-project-journal-0.5.1.tgz>
 
-`~/.dsh/profiles/desktop/package.json` 里加依赖并追加到 `dsh.profile.bundles`：
+### 为什么没有 npm
 
-```jsonc
-{
-  "dependencies": {
-    "@pawsey0319/dsh-project-journal": "link:/绝对路径/dsh-project-journal"
-  },
-  "dsh": {
-    "profile": {
-      "bundles": [
-        // ……已有条目保持原顺序……
-        "@pawsey0319/dsh-project-journal"   // ← 追加
-      ]
-    }
-  }
-}
-```
-
-```bash
-cd ~/.dsh/profiles/desktop && corepack pnpm install   # 也可 corepack pnpm add link:/绝对路径/dsh-project-journal
-```
-
-> DSH 用 corepack 管理 pnpm，PATH 里通常没有裸 `pnpm`（本机 `corepack pnpm --version` → 12.21.0）；照抄命令请带 `corepack` 前缀，或改用 `npx pnpm`。
-
-进 `bundles` 后插件自带的 patch 会自行 `insert` 自己的条目（`id: dsh-project-journal`），一般**不需要**手写 patch 层；要显式指定时：
-
-```yaml
-# ~/.dsh/profiles/desktop/cordis.patch.yml
-- insert:
-    - id: dsh-project-journal
-      name: '@pawsey0319/dsh-project-journal'
-```
-
-### 方式 D：GitHub Release 压缩包（不装 git、不装 npm）
-
-每个 tag 都附带一个 `npm pack` 产物：
-
-```bash
-mkdir -p ~/.dsh-plugins && cd ~/.dsh-plugins
-curl -L -o pj.tgz https://github.com/pawsey0319/dsh-project-journal/releases/download/v0.5.1/dsh-project-journal-0.5.1.tgz
-mkdir -p dsh-project-journal && tar -xzf pj.tgz -C dsh-project-journal --strip-components=1
-```
-
-然后按**方式 A** 用 `~/.dsh-plugins/dsh-project-journal` 的绝对路径安装，或按**方式 B** `link:` 进 profile。
-压缩包是发布产物（`files[]` 内的 15 个文件：三个 JS、`locale/`、`scripts/` 三道文档/无障碍/主题闸门、`test/` 两个用例文件、README、CHANGELOG、LICENSE、`package.json`、`cordis.patch.yml`），不含 `node_modules` 与 `docs/`；不需要开发依赖，解包后可直接 `node --test test/*.test.mjs`。
-
-> 资产名口径：`npm pack` 对 `@pawsey0319/dsh-project-journal` 产出的实际文件名是 `pawsey0319-dsh-project-journal-<版本>.tgz`（`@` 与 `/` 都换成 `-`），而 Release 资产统一用**去 scope** 的 `dsh-project-journal-<版本>.tgz`——上传前先改文件名（`gh release upload` 用文件 basename 作资产名）。本 README 的下载链接用的是去 scope 名；`npm run check` 会断言「资产名 = pack 名去掉 `pawsey0319-` 前缀」。
-
-### 方式 C：从 GitHub clone 后安装
-
-```bash
-git clone https://github.com/pawsey0319/dsh-project-journal.git ~/.dsh-plugins/dsh-project-journal
-cd ~/.dsh-plugins/dsh-project-journal && npm test    # 可选：先跑单测
-```
-
-然后按方式 A 或 B 安装 `~/.dsh-plugins/dsh-project-journal`。
-
-> 注意：`~/.dsh-plugins/dsh-project-journal` 只是 clone 出来的**暂存源码目录**，不是插件管理器实际安装的位置。装好之后，面板用的插件在 `~/.dsh/profiles/<profile>/node_modules/@pawsey0319/dsh-project-journal`：按**方式 A**（本地路径 `install_bundle`）装出来的是拷贝副本，不是开发副本（没有 git 历史，不适合就地迭代改动）；**方式 B** 的 `link:` 直接指向 clone 目录，装出来的和 clone 是同一份。两种安装都没有开发依赖，测试都请在 clone 目录跑。
-
-更新：`git pull` 后 **disable → enable**（Host 半代码改动必须走这一步；只改 `client.js` 时 HMR 会自动热替换）。
+作者没有开通 npm 2FA 发布权限，所以 `npm install` 和「按版本号 install_bundle」都会 404。上面两条路线都不经过 npm。
 
 ### 装载自检
 
@@ -362,7 +316,10 @@ dsh-project-journal/
 Project Journal keeps a durable, per-project chain of phases, next steps and problem records for every DSH session, and can migrate a session back to the project it really belongs to.
 
 - Package: `@pawsey0319/dsh-project-journal` (v0.5.1, MIT; distributed via GitHub Releases, not npm)
-- Install it from the DSH Plugin Manager using a local checkout (or the release tarball), then enable the bundle; it registers a sidebar entry, a per-session move button and a full-screen overlay panel. Local development can link the repo into `~/.dsh/profiles/<profile>/package.json` and add it to `dsh.profile.bundles`. There is intentionally no npm distribution path.
+- Install, two routes only — no npm anywhere:
+  1. **One command** (needs the `dsh` CLI): `dsh plugin --profile web add github:pawsey0319/dsh-project-journal` (`--profile desktop` on the desktop app), then restart DSH.
+  2. **One paragraph, no terminal**: paste this into any DSH session and let the agent do it — *"Install the DSH plugin dsh-project-journal: download the latest `dsh-project-journal-<version>.tgz` from https://github.com/pawsey0319/dsh-project-journal/releases, unpack it, call `plugin_manager` `install_bundle` with the unpacked directory as `target`, require `application: \"applied\"`, restart DSH, then confirm a \"进展\" button at the sidebar foot. Do not use npm/pnpm, do not edit app.asar, do not hand-edit the profile manifest."*
+- Either route enables the bundle and registers a sidebar entry, a per-session move button and a full-screen overlay panel. There is intentionally no npm distribution path.
 - Action clicks go through a single `act()` helper (79 call sites) that emits a `ui:<action>` beacon and routes failures to the panel error bar instead of throwing into the host.
 - Data stays in `~/.dsh/project-journal/journal.json`; summaries are produced by the model configured in DSH, and the model never receives file contents or images.
 - Writes use GET + query on purpose: DSH prefix routes only serve `GET`/`HEAD`. The surface is unauthenticated, so never expose the DSH port publicly.
