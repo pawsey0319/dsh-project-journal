@@ -65,7 +65,7 @@ for (const [name, text] of [['README.md', readme], ['docs/DEV.md', dev]]) {
 
 // 7) 发布产物：npm pack 产出带 scope 前缀的文件名，但 Release 资产统一用去 scope 名
 //    （上传前改名，`gh release upload` 用 basename 作资产名）。README 必须用去 scope 名，
-//    同时守住 files[] 的文件数（G4：15 个），避免文档与 tarball 再次漂移。
+//    同时守住 files[] 的文件数（G4：16 个），避免文档与 tarball 再次漂移。
 const packName = `${pkg.name.replace(/^@/, '').replace(/\//g, '-')}-${pkg.version}.tgz`
 const assetName = packName.replace(/^pawsey0319-/, '')
 if (assetName === packName) fail(`无法从 pack 名 ${packName} 推出发布资产名，请检查 package.json name 与发布换名规则`)
@@ -77,8 +77,8 @@ try {
   if (entry === null || typeof entry.filename !== 'string') fail('npm pack --dry-run --json 没返回文件名')
   else {
     if (entry.filename !== packName) fail(`npm pack 实际产物 ${entry.filename} 与推断 ${packName} 不一致`)
-    if (!Array.isArray(entry.files) || entry.files.length !== 15) fail(`发布包应为 15 个文件，实际 ${entry.files?.length ?? '未知'}`)
-    else ok(`npm pack: ${entry.filename} → asset ${assetName} (15 files)`)
+    if (!Array.isArray(entry.files) || entry.files.length !== 16) fail(`发布包应为 16 个文件，实际 ${entry.files?.length ?? '未知'}`)
+    else ok(`npm pack: ${entry.filename} → asset ${assetName} (16 files)`)
   }
 } catch (error) {
   console.log(`ok  npm pack: skip (${String(error?.code ?? error?.message ?? error)})`)
