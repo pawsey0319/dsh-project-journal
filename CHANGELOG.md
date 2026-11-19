@@ -3,6 +3,15 @@
 本插件的所有重要变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.5.1] - 2026-11-19
+
+修 0.5.0 的两个可见问题（用户：「新建阶段左边的按钮看不清因为颜色，右边按钮…点击展不开」）。
+
+### 修复
+
+- **主按钮白底白字**：DSH 没有 `label-on-brand` token，且品牌色是单色系（浅色主题近黑 `#0f1115`、深色主题近白 `#f9fafb`）；`迁移` 用品牌色填充后，深色主题下变成白底白字。改为描边式主按钮（透明底 + 品牌色文字/边框），实测对比度 17.45:1（深色）/ 18.08:1（浅色）；`--pj-on-accent` 同时改为跟随底色的 `var(--pj-bg)`，供仍使用实心品牌色的角标使用。
+- **`⋯` 菜单展不开**：菜单原先渲染在 54px 高的顶栏内部，`.pj-settings{max-height:calc(100% - 70px)}` 相对顶栏解析成负数，整个菜单被夹成 12px 高、内容全被裁掉。菜单移出顶栏、挂到面板层（`.pj-menu`，`top:58px;right:12px;width:200px;z-index:40`），实测 200×228 正常展开。
+
 ## [0.5.0] - 2026-11-18
 
 界面与信息架构重做（用户：「ui 排版以及逻辑性太差，重新设计 ui」）。三栏：左项目 / 中阶段时间线 / 右阶段检视器；顶栏只留标题、分支页签、搜索、状态、迁移、新建阶段、⋯ 与关闭。设计见 `docs/superpowers/specs/2026-11-18-journal-ui-redesign-design.md`，对照稿见 `docs/mockups/journal-ui-redesign.html`。

@@ -5,7 +5,7 @@
 把 DeepSeek Harness（DSH）里散落在各个会话中的「项目进展」整理成一条可回看的阶段链：每个项目一份进展记录，包含阶段、下一步和问题档案，并支持把会话一键迁回它真正所属的项目。
 
 - npm 包名：`@pawsey0319/dsh-project-journal`
-- 当前版本：`0.5.0`（见 [CHANGELOG.md](CHANGELOG.md)）
+- 当前版本：`0.5.1`（见 [CHANGELOG.md](CHANGELOG.md)）
 - 许可证：[MIT](LICENSE) © 2026 pawsey0319
 - 宿主：DSH（`manifestVersion: 1`，需要 Web 客户端与 `slots` 服务）
 
@@ -123,7 +123,7 @@ cd ~/.dsh/profiles/desktop && corepack pnpm install   # 也可 corepack pnpm add
 
 ```bash
 mkdir -p ~/.dsh-plugins && cd ~/.dsh-plugins
-curl -L -o pj.tgz https://github.com/pawsey0319/dsh-project-journal/releases/download/v0.5.0/dsh-project-journal-0.5.0.tgz
+curl -L -o pj.tgz https://github.com/pawsey0319/dsh-project-journal/releases/download/v0.5.1/dsh-project-journal-0.5.1.tgz
 mkdir -p dsh-project-journal && tar -xzf pj.tgz -C dsh-project-journal --strip-components=1
 ```
 
@@ -361,7 +361,7 @@ dsh-project-journal/
 
 Project Journal keeps a durable, per-project chain of phases, next steps and problem records for every DSH session, and can migrate a session back to the project it really belongs to.
 
-- Package: `@pawsey0319/dsh-project-journal` (v0.5.0, MIT; distributed via GitHub Releases, not npm)
+- Package: `@pawsey0319/dsh-project-journal` (v0.5.1, MIT; distributed via GitHub Releases, not npm)
 - Install it from the DSH Plugin Manager using a local checkout (or the release tarball), then enable the bundle; it registers a sidebar entry, a per-session move button and a full-screen overlay panel. Local development can link the repo into `~/.dsh/profiles/<profile>/package.json` and add it to `dsh.profile.bundles`. There is intentionally no npm distribution path.
 - Action clicks go through a single `act()` helper (79 call sites) that emits a `ui:<action>` beacon and routes failures to the panel error bar instead of throwing into the host.
 - Data stays in `~/.dsh/project-journal/journal.json`; summaries are produced by the model configured in DSH, and the model never receives file contents or images.

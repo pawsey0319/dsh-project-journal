@@ -426,7 +426,9 @@ window.__ModuleLoader__.load({
   --pj-success:var(--dsw-alias-state-success-primary,ButtonText);
   --pj-danger:var(--dsw-alias-state-error-primary,ButtonText);
   --pj-label-warning:var(--dsw-alias-warning,Mark);
-  --pj-on-accent:var(--dsw-alias-label-on-brand,ButtonText);
+  /* DSH 没有 label-on-brand token。品牌色是单色系：浅色主题近黑(#0f1115)、
+     深色主题近白(#f9fafb)，所以「填色块上的文字」必须跟着底色反相 = 用 bg-base。 */
+  --pj-on-accent:var(--pj-bg,#fff);
   --pj-on-warn:ButtonText;
 }
 .pj-root{position:fixed;inset:0;z-index:2147483640;pointer-events:auto;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.5)}
@@ -437,7 +439,8 @@ window.__ModuleLoader__.load({
 .pj-spacer{flex:1}
 .pj-btn{appearance:none;border:1px solid var(--pj-border);background:var(--pj-hover);color:inherit;border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer;line-height:1.4}
 .pj-btn:hover{background:var(--pj-surface-raise)}
-.pj-btn.primary{background:var(--pj-accent);border-color:transparent;color:var(--pj-on-accent)}
+.pj-btn.primary{background:transparent;border-color:var(--pj-accent);color:var(--pj-accent);font-weight:600}
+.pj-btn.primary:hover{background:var(--pj-hover);border-color:var(--pj-accent)}
 .pj-btn.ghost{background:transparent}
 .pj-btn:disabled{opacity:.5;cursor:default}
 .pj-body{flex:1;display:flex;min-height:0}
@@ -532,6 +535,8 @@ window.__ModuleLoader__.load({
 .pj-error{padding:8px 16px;background:color-mix(in srgb,var(--pj-danger) 14%,transparent);color:var(--pj-danger);font-size:12px}
 .pj-foot{padding:7px 16px;border-top:1px solid var(--pj-border);color:var(--pj-text-tertiary);font-size:11px;display:flex;gap:14px;flex-wrap:wrap;align-items:center}
 .pj-confirmbar{position:absolute;left:12px;right:12px;bottom:10px;padding:9px 11px;border-radius:10px;background:var(--pj-surface-raise);border:1px solid var(--pj-accent);display:flex;align-items:center;gap:9px;z-index:6;font-size:12px;box-shadow:0 12px 36px rgba(0,0,0,.45)}
+.pj-settings.pj-menu{top:58px;right:12px;width:200px;padding:6px;gap:2px;z-index:40}
+.pj-menu .pj-btn{flex:0 0 auto}
 .pj-settings{position:absolute;right:18px;top:56px;width:340px;background:var(--pj-surface);border:1px solid var(--pj-border);border-radius:11px;padding:14px;box-shadow:0 16px 40px rgba(0,0,0,.5);z-index:5;display:flex;flex-direction:column;gap:9px}
 .pj-label{font-size:11px;color:var(--pj-text-tertiary);margin-bottom:-4px}
 .pj-icon{width:16px;height:16px;display:block}
@@ -2087,12 +2092,12 @@ window.__ModuleLoader__.load({
             h('button', { className: 'pj-btn primary', type: 'button', onClick: act('migrate-open', () => setState({ moveSessionId: null, migrateTargetId: null, migratePickerOf: selected?.id ?? null })) }, '迁移'),
             h('button', { className: 'pj-btn', type: 'button', onClick: act('phase-create-open', () => setState({ phaseDraft: { projectId: selected?.id, branchId } })) }, '新建阶段'),
             h('button', { className: 'pj-btn ghost', type: 'button', 'aria-expanded': store.menuOpen === true, onClick: act('menu-toggle', () => setState({ menuOpen: store.menuOpen !== true })) }, '⋯'),
-            store.menuOpen === true
-              ? h('div', { className: 'pj-settings', style: { top: 48, right: 12, width: 190, padding: 5 } },
-                  menuItems.map(([key, label]) => h('button', { key, className: 'pj-btn ghost', type: 'button', style: { display: 'block', width: '100%', textAlign: 'left' }, onClick: act(`menu-${key}`, () => onMenu(key)) }, label)))
-              : null,
             h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('close-click', closePanel) }, '关闭'),
           ),
+          store.menuOpen === true
+            ? h('div', { className: 'pj-settings pj-menu', role: 'menu' },
+                menuItems.map(([key, label]) => h('button', { key, className: 'pj-btn ghost', type: 'button', role: 'menuitem', style: { display: 'block', width: '100%', textAlign: 'left' }, onClick: act(`menu-${key}`, () => onMenu(key)) }, label)))
+            : null,
           h('div', { className: 'pj-bannerbar' }, headBanner, bannerList),
           h(
             'div',
