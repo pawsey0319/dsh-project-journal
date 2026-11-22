@@ -5,7 +5,7 @@
 把 DeepSeek Harness（DSH）里散落在各个会话中的「项目进展」整理成一条可回看的阶段链：每个项目一份进展记录，包含阶段、下一步和问题档案，并支持把会话一键迁回它真正所属的项目。
 
 - npm 包名：`@pawsey0319/dsh-project-journal`
-- 当前版本：`0.5.2`（见 [CHANGELOG.md](CHANGELOG.md)）
+- 当前版本：`0.5.3`（见 [CHANGELOG.md](CHANGELOG.md)）
 - 新手上路：[使用手册 MANUAL.md](MANUAL.md)（安装、界面、分支、迁移、回收站、FAQ）
 - 许可证：[MIT](LICENSE) © 2026 pawsey0319
 - 宿主：DSH（`manifestVersion: 1`，需要 Web 客户端与 `slots` 服务）
@@ -94,7 +94,7 @@ dsh plugin --profile web add github:pawsey0319/dsh-project-journal
 装好后**重启一次**（Host 半是 Node 代码，热替换不生效）；只改 `client.js` 的版本刷新窗口即可。
 
 当前版本资产（可直接下载，agent 也可以从这里取）：
-<https://github.com/pawsey0319/dsh-project-journal/releases/download/v0.5.2/dsh-project-journal-0.5.2.tgz>
+<https://github.com/pawsey0319/dsh-project-journal/releases/download/v0.5.3/dsh-project-journal-0.5.3.tgz>
 
 ### 为什么没有 npm
 
@@ -205,6 +205,7 @@ curl -s "$B/x-journal/api/backfill?action=reset"   # 游标重置为 -1 并重�
 | `/api/branch/diff?projectId=&branchId=` | 分支与主线在分叉点之后的差异、各自未解决问题数 |
 | `/api/backups` | 备份目录与备份文件列表 |
 | `/api/trash` | 回收站占用、按项目统计、已软删阶段与产物清单 |
+| `/api/session-live?sessionId=` | 这条会话现在还能不能打开：`alive`（在会话列表里）、`archived`（已归档） |
 | `/api/session-debug?sessionId=` | 维护用：事件数、turn 数、首/末条用户消息摘要 |
 | `/api/migrate?...&dryRun=1` | 迁移预演（不写库） |
 | `/api/phase/revisions?projectId=&phaseId=` | 某个阶段的完整修订历史（最近 20 条，新→旧；含 `by`/`before`/`after`/`restoredFrom` 与 `summaryMeta`） |
@@ -239,7 +240,7 @@ curl -s "$B/x-journal/api/backfill?action=reset"   # 游标重置为 -1 并重�
 | `/api/backup/restore` | `file` | 从备份恢复 |
 | `/api/consistency/fix` | `projectId`（可选） | 修掉「会话指向不存在阶段 / 阶段列着不存在或跨项目会话」 |
 
-维护/调试接口（默认不用）：`/api/session-archive`、`/api/session-record`（`action=delete`，只删 journal 记录）、`/api/session-create`、`/api/session-prompt`、`/api/session-cancel`、`/api/workspace-create`（需 `confirm=1`）、`/api/workspace-delete`。
+维护/调试接口（默认不用）：`/api/session-archive`、`/api/session-record`（`action=delete`，只删 journal 记录）、`/api/session-create`、`/api/session-prompt`、`/api/session-live`、`/api/session-cancel`、`/api/workspace-create`（需 `confirm=1`）、`/api/workspace-delete`。
 
 ## 限制与已知问题
 
@@ -316,7 +317,7 @@ dsh-project-journal/
 
 Project Journal keeps a durable, per-project chain of phases, next steps and problem records for every DSH session, and can migrate a session back to the project it really belongs to.
 
-- Package: `@pawsey0319/dsh-project-journal` (v0.5.2, MIT; distributed via GitHub Releases, not npm)
+- Package: `@pawsey0319/dsh-project-journal` (v0.5.3, MIT; distributed via GitHub Releases, not npm)
 - Install, two routes only — no npm anywhere:
   1. **One command** (needs the `dsh` CLI): `dsh plugin --profile web add github:pawsey0319/dsh-project-journal` (`--profile desktop` on the desktop app), then restart DSH.
   2. **One paragraph, no terminal**: paste this into any DSH session and let the agent do it — *"Install the DSH plugin dsh-project-journal: download the latest `dsh-project-journal-<version>.tgz` from https://github.com/pawsey0319/dsh-project-journal/releases, unpack it, call `plugin_manager` `install_bundle` with the unpacked directory as `target`, require `application: \"applied\"`, restart DSH, then confirm a \"进展\" button at the sidebar foot. Do not use npm/pnpm, do not edit app.asar, do not hand-edit the profile manifest."*

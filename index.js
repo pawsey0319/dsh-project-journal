@@ -14,6 +14,7 @@ import { basename, dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import {
+
   BACKUP_DIR,
   TRASH_DIR,
   FILE,
@@ -45,6 +46,16 @@ import {
   resequence,
   saveJournal,
 } from './journal-store.js'
+
+/** 按「码点」截断，绝不在代理对中间砍断（emoji 安全）。
+ *  数组原样按元素切；其它值转字符串后按 Array.from 切。
+ *  审计项 E-02/F-03：`str.slice(0,N)` 可能产生孤立代理 → JSON/UTF-8 往返出现 U+FFFD。 */
+function uslice(value, count) {
+  if (Array.isArray(value)) return value.slice(0, count)
+  const text = value === null || value === undefined ? '' : String(value)
+  const chars = Array.from(text)
+  return chars.length > count ? chars.slice(0, count).join('') : text
+}
 
 export const name = 'dsh-project-journal'
 export const inject = ['webServer', 'storageDomain', 'sessionQuery', 'llm']
@@ -154,7 +165,7 @@ function stateEtag(value) {
   } else {
     hash.update(JSON.stringify(value) ?? 'null')
   }
-  return `"${hash.digest('base64url').slice(0, 27)}"`
+  return `"${uslice(hash.digest('base64url'), 27)}"`
 }
 
 // 导出与面板同一口径的作者行（t6 F8：Markdown 导出也要能看出「这段是谁写的」）。
@@ -214,6 +225,27 @@ export function apply(ctx) {
     beacons.push(entry)
     if (beacons.length > 40) beacons.shift()
     console.log('[project-journal]', message, detail === undefined ? '' : JSON.stringify(detail))
+  }
+
+  // 会话「现在还能不能打开」：listSessions 是唯一权威来源（归档/删除的会话不在里面）。
+  // 30s 缓存，避免每次点「打开会话」都拉一遍全量列表。
+  let liveIds = null
+  let liveAt = 0
+  async function refreshLiveIds(force = false) {
+    if (force !== true && liveIds !== null && Date.now() - liveAt < 30000) return liveIds
+    try {
+      const list = await ctx.sessionQuery.listSessions()
+      const set = new Set()
+      for (const item of Array.isArray(list) ? list : []) {
+        const id = item?.header?.id
+        if (typeof id === 'string') set.add(id)
+      }
+      liveIds = set
+      liveAt = Date.now()
+    } catch (error) {
+      note('listSessions 失败', { reason: String(error) })
+    }
+    return liveIds
   }
 
   // ---------------------------------------------------------------- workspaces
@@ -307,6 +339,10 @@ export function apply(ctx) {
     } catch (error) {
       note('listSessions 失败', { reason: String(error) })
     }
+    if (list.length > 0) {
+      liveIds = new Set(list.map((item) => item?.header?.id).filter((id) => typeof id === 'string'))
+      liveAt = Date.now()
+    }
     const archived = archivedSessions()
     let changed = false
     for (const item of list) {
@@ -353,7 +389,7 @@ export function apply(ctx) {
       try {
         const title = await ctx.sessionQuery.readTitle(record.sessionId)
         if (typeof title === 'string' && title.trim() !== '') {
-          record.title = title.trim().slice(0, 60)
+          record.title = uslice(title.trim(), 60)
           changed = true
           continue
         }
@@ -362,7 +398,7 @@ export function apply(ctx) {
           if (event.type !== 'user/message') continue
           const text = contentText(event.data?.content).replace(/\s+/g, ' ').trim()
           if (text !== '') {
-            record.title = text.slice(0, 42)
+            record.title = uslice(text, 42)
             changed = true
             break
           }
@@ -489,7 +525,7 @@ export function apply(ctx) {
           provider: resolved.provider,
           model: resolved.model,
           latencyMs: Date.now() - started,
-          reply: text.trim().slice(0, 24),
+          reply: uslice(text.trim(), 24),
           error: null,
         }
       } catch (error) {
@@ -567,7 +603,7 @@ export function apply(ctx) {
           if (event.type !== 'user/message') continue
           const text = contentText(event.data?.content).replace(/\s+/g, ' ').trim()
           if (text !== '') {
-            record.title = text.slice(0, 42)
+            record.title = uslice(text, 42)
             break
           }
         }
@@ -859,7 +895,7 @@ export function apply(ctx) {
                 cloned = {
                   ...(sourceBranch ?? {}),
                   id: newId('br'),
-                  title: title.slice(0, 60),
+                  title: uslice(title, 60),
                   status: 'active',
                   createdAt: now,
                   note: '随会话迁入',
@@ -999,7 +1035,7 @@ async function resolvePhaseSource(project, phase) {
     const redoTitle = phase.redoOf === null || phase.redoOf === undefined
       ? `重做 · ${baseTitle}`
       : `重做² · ${baseTitle}`
-    const title = String(rawTitle ?? '').trim().slice(0, 40) || redoTitle.slice(0, 40)
+    const title = uslice(String(rawTitle ?? '').trim(), 40) || uslice(redoTitle, 40)
     const branch = {
       id: newId('br'),
       title,
@@ -1016,7 +1052,7 @@ async function resolvePhaseSource(project, phase) {
       seq: 1,
       branchId: branch.id,
       redoOf: phase.id,
-      title: (phase.title.startsWith('重做 · ') ? phase.title : `重做 · ${phase.title}`).slice(0, 40),
+      title: uslice((phase.title.startsWith('重做 · ') ? phase.title : `重做 · ${phase.title}`), 40),
       summary: '',
       status: 'active',
       startedAt: now,
@@ -1099,7 +1135,7 @@ async function resolvePhaseSource(project, phase) {
             sessionId: newSessionId,
             projectId,
             branchId: branch.id,
-            title: (phase.title.startsWith('重做 · ') ? phase.title : `重做 · ${phase.title}`).slice(0, 42),
+            title: uslice((phase.title.startsWith('重做 · ') ? phase.title : `重做 · ${phase.title}`), 42),
             cwd: project.path ?? '',
             createdAt: now,
             updatedAt: null,
@@ -1159,7 +1195,7 @@ async function resolvePhaseSource(project, phase) {
     if (branchId === MAIN_BRANCH) return { error: 'cannot-modify-main' }
     if (action === 'rename') {
       const title = String(rawTitle ?? '').trim()
-      if (title !== '') branch.title = title.slice(0, 60)
+      if (title !== '') branch.title = uslice(title, 60)
       project.updatedAt = new Date().toISOString()
       saveJournal(state)
       return { ok: true, branchId, title: branch.title }
@@ -1349,7 +1385,7 @@ async function resolvePhaseSource(project, phase) {
     const existing = branchPhases(project, branch.id)
     const now = new Date().toISOString()
     const seq = existing.length + 1
-    const title = String(rawTitle ?? '').trim().slice(0, 40) || `阶段 ${seq}`
+    const title = uslice(String(rawTitle ?? '').trim(), 40) || `阶段 ${seq}`
     for (const item of existing) {
       if (item.status === 'active') {
         item.status = 'done'
@@ -1362,7 +1398,7 @@ async function resolvePhaseSource(project, phase) {
       branchId: branch.id,
       redoOf: null,
       title,
-      summary: String(rawSummary ?? '').trim().slice(0, 900),
+      summary: uslice(String(rawSummary ?? '').trim(), 900),
       status: 'active',
       startedAt: now,
       endedAt: null,
@@ -1640,7 +1676,13 @@ async function resolvePhaseSource(project, phase) {
       skipped: tally('skipped'),
       pending: gaps.length,
       coverage: total === 0 ? 1 : Number((summarized / total).toFixed(3)),
-      gaps: gaps.slice(0, 40),
+      // t22 / B-5：gaps 只在这一处出现（顶层不再重复一份），并且和 evidence.problems 同一口径。
+      gaps: uslice(gaps, 40),
+      // 兼容字段：老消费方在 summary 上读 open/openAll/openInferred（恒等式 open + openInferred == openAll）。
+      ...(() => {
+        const problems = evidenceReport().problems
+        return { open: problems.open, openAll: problems.openAll, openInferred: problems.openInferred }
+      })(),
       sessions: rows,
     }
   }
@@ -1683,6 +1725,7 @@ async function resolvePhaseSource(project, phase) {
 
   function buildState() {
     const { list, snap } = visibleProjects()
+    const archived = archivedSessions()
     const byPath = new Map()
     for (const project of Object.values(state.projects)) {
       if (typeof project.path === 'string' && project.path !== '') byPath.set(project.path, project)
@@ -1714,6 +1757,8 @@ async function resolvePhaseSource(project, phase) {
           cursorSeq: Number.isFinite(record.cursorSeq) ? record.cursorSeq : -1,
           dirtyAt: record.dirtyAt ?? null,
           lastError: record.lastError,
+          alive: liveIds === null ? null : liveIds.has(record.sessionId),
+          archived: archived.has(record.sessionId),
         }))
       return {
         id: project.id,
@@ -1750,7 +1795,7 @@ async function resolvePhaseSource(project, phase) {
           })),
         consistency: (() => {
           const issues = consistencyIssues(project)
-          return { ok: issues.length === 0, count: issues.length, issues: issues.slice(0, 20) }
+          return { ok: issues.length === 0, count: issues.length, issues: uslice(issues, 20) }
         })(),
       }
     })
@@ -1859,7 +1904,7 @@ async function resolvePhaseSource(project, phase) {
       try {
         parsed = new URL(value)
       } catch {
-        return `${name} 不是合法 URL：${value.slice(0, 80)}`
+        return `${name} 不是合法 URL：${uslice(value, 80)}`
       }
       const port = parsed.port === '' ? (parsed.protocol === 'https:' ? '443' : '80') : parsed.port
       if (!sameHost(parsed.hostname.toLowerCase(), port)) return `${name} 与宿主不同源：${parsed.origin}`
@@ -2212,6 +2257,18 @@ async function resolvePhaseSource(project, phase) {
           saveJournal(state)
           return json({ ok: true, sessionId })
         }
+        if (pathname.endsWith('/api/session-live')) {
+          const sessionId = q.get('sessionId')
+          if (sessionId === null) return json({ error: 'bad-request' }, 400)
+          const set = await refreshLiveIds(true)
+          return json({
+            ok: true,
+            sessionId,
+            known: state.sessions[sessionId] !== undefined,
+            alive: set === null ? null : set.has(sessionId),
+            archived: archivedSessions().has(sessionId),
+          })
+        }
         if (pathname.endsWith('/api/session-debug')) {
           const sessionId = q.get('sessionId')
           if (sessionId === null) return json({ error: 'bad-request' }, 400)
@@ -2221,8 +2278,8 @@ async function resolvePhaseSource(project, phase) {
             ok: true,
             events: snapshot.events.length,
             turns: snapshot.events.filter((event) => event.type === 'turn/end').length,
-            firstUser: users[0] === undefined ? null : contentText(users[0].data?.content).slice(0, 160),
-            lastUser: users.length === 0 ? null : contentText(users[users.length - 1].data?.content).slice(0, 160),
+            firstUser: users[0] === undefined ? null : uslice(contentText(users[0].data?.content), 160),
+            lastUser: users.length === 0 ? null : uslice(contentText(users[users.length - 1].data?.content), 160),
           })
         }
         if (pathname.endsWith('/api/branch/seed')) {
@@ -2239,7 +2296,7 @@ async function resolvePhaseSource(project, phase) {
             ok: true,
             title: (() => {
               const base = String(phase.title ?? '').replace(/^重做 · /, '')
-              return (phase.redoOf === null || phase.redoOf === undefined ? `重做 · ${base}` : `重做² · ${base}`).slice(0, 40)
+              return uslice((phase.redoOf === null || phase.redoOf === undefined ? `重做 · ${base}` : `重做² · ${base}`), 40)
             })(),
             fromSeq: phase.seq,
             prompt: buildSeed(project, phase),
@@ -2286,11 +2343,11 @@ async function resolvePhaseSource(project, phase) {
             }
           }
           if (removed.length === 0) return json({ ok: true, removed: 0, items: [], dry })
-          if (dry) return json({ ok: true, dry: true, removed: removed.length, items: removed.slice(0, 40) })
+          if (dry) return json({ ok: true, dry: true, removed: removed.length, items: uslice(removed, 40) })
           project.updatedAt = new Date().toISOString()
           saveJournal(state)
           note('产物清理', { projectId: project.id, phaseId: phaseOnly === '' ? null : phaseOnly, removed: removed.length })
-          return json({ ok: true, removed: removed.length, items: removed.slice(0, 40) })
+          return json({ ok: true, removed: removed.length, items: uslice(removed, 40) })
         }
         if (pathname.endsWith('/api/artifact/open')) {
           const projectId = q.get('projectId') ?? ''
@@ -2514,14 +2571,14 @@ async function resolvePhaseSource(project, phase) {
               nextSteps: Array.isArray(phase.nextSteps) ? [...phase.nextSteps] : [],
             }
             const title = q.get('title')
-            if (title !== null && title.trim() !== '') phase.title = title.trim().slice(0, 40)
+            if (title !== null && title.trim() !== '') phase.title = uslice(title.trim(), 40)
             const summary = q.get('summary')
-            if (summary !== null) phase.summary = summary.trim().slice(0, 900)
+            if (summary !== null) phase.summary = uslice(summary.trim(), 900)
             const nextSteps = q.get('nextSteps')
             if (nextSteps !== null) {
               phase.nextSteps = nextSteps
                 .split('|')
-                .map((step) => step.trim().slice(0, 120))
+                .map((step) => uslice(step.trim(), 120))
                 .filter((step) => step !== '')
                 .slice(0, 6)
             }
@@ -2565,7 +2622,7 @@ async function resolvePhaseSource(project, phase) {
             known.add(relative)
             added.push(relative)
           }
-          phase.artifacts = [...(Array.isArray(phase.artifacts) ? phase.artifacts : []), ...added].slice(0, 12)
+          phase.artifacts = uslice([...(Array.isArray(phase.artifacts) ? phase.artifacts : []), ...added], 12)
           project.updatedAt = new Date().toISOString()
           saveJournal(state)
           return json({ ok: true, added, total: phase.artifacts.length })
@@ -2655,7 +2712,7 @@ async function resolvePhaseSource(project, phase) {
             status: phase.status,
             nextSteps: Array.isArray(phase.nextSteps) ? [...phase.nextSteps] : [],
           }
-          phase.title = String(target.before.title ?? phase.title).slice(0, 40)
+          phase.title = uslice(String(target.before.title ?? phase.title), 40)
           phase.summary = String(target.before.summary ?? '')
           if (target.before.status === 'done' || target.before.status === 'active' || target.before.status === 'planned') phase.status = target.before.status
           phase.nextSteps = Array.isArray(target.before.nextSteps) ? [...target.before.nextSteps] : []
@@ -2703,7 +2760,7 @@ async function resolvePhaseSource(project, phase) {
               branch: branchProblems.filter((problem) => problem.status === 'open' && problemConfidence(problem) === 'inferred').length,
               mainAfterFork: mainProblems.filter((problem) => problem.status === 'open' && problemConfidence(problem) === 'inferred').length,
             },
-            branchProblemTitles: branchProblems.filter((problem) => problem.status === 'open').slice(0, 8).map((problem) => problem.statement),
+            branchProblemTitles: uslice(branchProblems.filter((problem) => problem.status === 'open'), 8).map((problem) => problem.statement),
             phaseIds: [...ids],
           })
         }
@@ -2714,11 +2771,11 @@ async function resolvePhaseSource(project, phase) {
           if (q.get('action') === 'delete') {
             phase.problems = phase.problems.filter((item) => item.id !== q.get('problemId'))
           } else {
-            const statement = String(q.get('statement') ?? '').trim().slice(0, 600)
+            const statement = uslice(String(q.get('statement') ?? '').trim(), 600)
             if (statement === '') return json({ error: 'empty-statement' }, 400)
             const problemId = q.get('problemId')
             const existing = problemId === null ? undefined : phase.problems.find((item) => item.id === problemId)
-            const resolution = String(q.get('resolution') ?? '').trim().slice(0, 600)
+            const resolution = uslice(String(q.get('resolution') ?? '').trim(), 600)
             const status = q.get('status') === 'open' ? 'open' : 'solved'
             if (existing === undefined) {
               phase.problems.push({ id: newId('pb'), statement, quote: '', resolution, status, at: new Date().toISOString(), sessionId: '', manual: true })

@@ -1,3 +1,13 @@
+
+/** 按「码点」截断，绝不在代理对中间砍断（emoji 安全）。
+ *  数组原样按元素切；其它值转字符串后按 Array.from 切。
+ *  审计项 E-02/F-03：`str.slice(0,N)` 可能产生孤立代理 → JSON/UTF-8 往返出现 U+FFFD。 */
+function uslice(value, count) {
+  if (Array.isArray(value)) return value.slice(0, count)
+  const text = value === null || value === undefined ? '' : String(value)
+  const chars = Array.from(text)
+  return chars.length > count ? chars.slice(0, count).join('') : text
+}
 /**
  * Project Journal (Client half).
  *
@@ -343,11 +353,11 @@ window.__ModuleLoader__.load({
           beacon(name)
           const result = typeof run === 'function' ? run(event) : undefined
           if (result !== null && typeof result === 'object' && typeof result.catch === 'function') {
-            result.catch((error) => setState({ error: `操作失败：${String(error?.message ?? error).slice(0, 120)}` }))
+            result.catch((error) => setState({ error: `操作失败：${uslice(String(error?.message ?? error), 120)}` }))
           }
           return result
         } catch (error) {
-          setState({ error: `操作失败：${String(error?.message ?? error).slice(0, 120)}` })
+          setState({ error: `操作失败：${uslice(String(error?.message ?? error), 120)}` })
           return undefined
         }
       }
@@ -387,7 +397,7 @@ window.__ModuleLoader__.load({
         if (gufa) beacon('panel-over-gufa')
         refresh()
       } catch (error) {
-        setState({ error: `打开面板失败：${String(error?.message ?? error).slice(0, 120)}` })
+        setState({ error: `打开面板失败：${uslice(String(error?.message ?? error), 120)}` })
       }
     }
     function closePanel() {
@@ -556,6 +566,7 @@ window.__ModuleLoader__.load({
 .pj-prefix-note{font-size:11px;color:var(--pj-text-tertiary);margin-bottom:6px}
 .pj-sessions{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
 .pj-chip.session{cursor:pointer;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pj-chip.dead{opacity:.75;border-color:var(--pj-border,#3a3a3a);color:var(--pj-text-tertiary,#8b8b8b);margin-left:6px}
 .pj-chip.redo{color:var(--pj-warn);border-color:color-mix(in srgb,var(--pj-warn) 50%,transparent)}
 .pj-chip.abandoned{color:var(--pj-text-tertiary)}
 .pj-backups{display:flex;flex-direction:column;gap:4px;max-height:220px;overflow:auto;margin-top:4px}
@@ -816,7 +827,7 @@ window.__ModuleLoader__.load({
         const short = String(row?.sessionId ?? '').slice(-8)
         return title !== '' && title !== '未命名会话' ? title : `未命名会话·${short}`
       }
-      const shown = gaps.slice(0, 3).map(label)
+      const shown = uslice(gaps, 3).map(label)
       const rest = pending - shown.length
       const head = `待汇总 ${pending}`
       if (shown.length === 0) return head
@@ -830,7 +841,7 @@ window.__ModuleLoader__.load({
       if (model.providerState === 'ok') return `模型 ${name}`
       if (model.providerState === 'unreachable') return `模型不可达（provider:unreachable）`
       if (model.providerState === 'unverified') return `模型 ${name}（未探活）`
-      if (model.error) return `模型不可用：${String(model.error).slice(0, 40)}`
+      if (model.error) return `模型不可用：${uslice(String(model.error), 40)}`
       return '模型未探活'
     }
 
@@ -938,9 +949,9 @@ window.__ModuleLoader__.load({
       if (meta === null || meta === undefined) return ''
       const who = AUTHOR_TEXT[meta.by] ?? '未知'
       const name = meta.by === 'model' && typeof meta.model === 'string' && meta.model !== '' ? `${who}（${meta.model}）` : who
-      const when = typeof meta.at === 'string' && meta.at !== '' ? new Date(meta.at).toLocaleString() : '时间未知'
+      const when = typeof meta.at === 'string' && meta.at !== '' ? new Date(meta.at).toLocaleString('zh-CN') : '时间未知'
       const inferred = meta.inferred === true ? ' · 旧数据推断' : ''
-      const restored = typeof meta.restoredFrom === 'string' && meta.restoredFrom !== '' ? ` · 回到 ${new Date(meta.restoredFrom).toLocaleString()} 那一版` : ''
+      const restored = typeof meta.restoredFrom === 'string' && meta.restoredFrom !== '' ? ` · 回到 ${new Date(meta.restoredFrom).toLocaleString('zh-CN')} 那一版` : ''
       return `作者：${name} · ${when}${restored}${inferred}`
     }
 
@@ -962,7 +973,7 @@ window.__ModuleLoader__.load({
       // C7/B3：首屏只显示 /api/state 带来的最近 5 条；「查看全部」再单独拉，避免把
       // 每个阶段的 20 条修订都塞进 390 KiB 的 state。
       const inlineTotal = Number.isFinite(phase.revisionCount) ? phase.revisionCount : inline.length
-      const revisions = cached === null ? inline.slice(0, 5) : cached.revisions
+      const revisions = cached === null ? uslice(inline, 5) : cached.revisions
       const total = cached === null ? inlineTotal : cached.revisionCount
       const loadAll = async () => {
         setLoading(true)
@@ -997,7 +1008,7 @@ window.__ModuleLoader__.load({
             'div',
             { className: 'pj-rev', key: item.at },
             h('div', { className: 'pj-rev-head' },
-              h('span', { className: 'pj-rev-time' }, new Date(item.at).toLocaleString()),
+              h('span', { className: 'pj-rev-time' }, new Date(item.at).toLocaleString('zh-CN')),
               h('span', { className: 'pj-chip' }, changedLabels(item.before, item.after).join(' / ')),
               item.by === 'restore' || item.restoredFrom ? h('span', { className: 'pj-chip' }, '回退记录') : null,
             ),
@@ -1081,7 +1092,7 @@ window.__ModuleLoader__.load({
         if (text.trim() === '') return
         setBusy(true)
         try {
-          await api('/api/branch/status', { projectId: project.id, branchId, action: 'rename', title: text.trim().slice(0, 40) })
+          await api('/api/branch/status', { projectId: project.id, branchId, action: 'rename', title: uslice(text.trim(), 40) })
           done()
           await refresh()
         } finally {
@@ -1114,7 +1125,7 @@ window.__ModuleLoader__.load({
         if (text.trim() === '') return
         setBusy(true)
         try {
-          const next = [...(phase.nextSteps ?? []), text.trim().slice(0, 120)].slice(0, 6)
+          const next = uslice([...(phase.nextSteps ?? []), uslice(text.trim(), 120)], 6)
           await api('/api/phase', { projectId: project.id, phaseId: phase.id, nextSteps: next.join('|') })
           done()
           await refresh()
@@ -1281,9 +1292,9 @@ window.__ModuleLoader__.load({
             ? h('div', { className: 'pj-sub' }, '读取备份列表…')
             : backups.length === 0
               ? h('div', { className: 'pj-sub' }, '还没有备份。迁移/开分支/恢复前会自动备份，也可以点上面「立即备份」。')
-              : backups.slice(0, 30).map((item) =>
+              : uslice(backups, 30).map((item) =>
                   h('div', { className: 'pj-backup-row', key: item.file },
-                    h('span', { className: 'pj-sub' }, `${item.at.replace('T', ' ').slice(0, 19)} · ${item.kind}${item.projects !== undefined ? ` · ${item.projects}项目/${item.sessions}会话` : ''} · ${Math.round((item.size ?? 0) / 1024)}KB`),
+                    h('span', { className: 'pj-sub' }, `${uslice(item.at.replace('T', ' '), 19)} · ${item.kind}${item.projects !== undefined ? ` · ${item.projects}项目/${item.sessions}会话` : ''} · ${Math.round((item.size ?? 0) / 1024)}KB`),
                     h('span', { className: 'pj-spacer', style: { flex: 1 } }),
                     item.restorable === true
                       ? h('button', { className: 'pj-btn ghost', type: 'button', disabled: busy, onClick: act('backup-restore', () => restore(item.file)) }, '恢复')
@@ -1354,7 +1365,7 @@ window.__ModuleLoader__.load({
                 'div',
                 { className: 'pj-trash-row', key: item.id },
                 h('span', { className: 'pj-trash-title' }, `${item.title}（${item.problemCount} 问题 · ${item.sessions.length} 会话${item.trashed.length > 0 ? ` · ${item.trashed.length} 个产物已在回收站` : ''}）`),
-                h('span', { className: 'pj-sub' }, `删除于 ${String(item.deletedAt).replace('T', ' ').slice(0, 16)}`),
+                h('span', { className: 'pj-sub' }, `删除于 ${uslice(String(item.deletedAt).replace('T', ' '), 16)}`),
                 h('span', { className: 'pj-spacer', style: { flex: 1 } }),
                 h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('trash-restore', () => restore(item.id)) }, '恢复'),
                 h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('trash-purge', () => purge(item.id, item.title)) }, '永久删除'),
@@ -1390,7 +1401,7 @@ window.__ModuleLoader__.load({
         'div',
         { className: 'pj-suggest', style: { borderColor: 'var(--pj-label-warning)' } },
         h('div', { className: 'pj-suggest-h' }, `进展记录与真实会话有 ${info.count} 处对不上（多为删除/迁移后的残留指针）`),
-        issues.slice(0, 5).map((issue, index) => h('div', { className: 'pj-suggest-row', key: index }, h('span', { className: 'pj-suggest-text' }, label(issue)))),
+        uslice(issues, 5).map((issue, index) => h('div', { className: 'pj-suggest-row', key: index }, h('span', { className: 'pj-suggest-text' }, label(issue)))),
         h(
           'div',
           { className: 'pj-row', style: { marginTop: 6 } },
@@ -1614,7 +1625,7 @@ window.__ModuleLoader__.load({
                       style: { justifyContent: 'flex-start', textAlign: 'left', display: 'flex', width: '100%', marginBottom: 4 },
                       onClick: act('attach-other-session', () => attach(session.sessionId, true)),
                     },
-                    `${String(session.title ?? session.sessionId).slice(0, 36)} · ${session.projectTitle}`,
+                    `${uslice(String(session.title ?? session.sessionId), 36)} · ${session.projectTitle}`,
                   ),
                 ),
               )
@@ -1635,7 +1646,7 @@ window.__ModuleLoader__.load({
                       style: { justifyContent: 'flex-start', textAlign: 'left' },
                       onClick: act('attach-session', () => attach(session.sessionId)),
                     },
-                    `${String(session.title ?? session.sessionId).slice(0, 40)} · ${session.branchId === 'main' ? '主线' : '其它分支'}`,
+                    `${uslice(String(session.title ?? session.sessionId), 40)} · ${session.branchId === 'main' ? '主线' : '其它分支'}`,
                   ),
                 ),
               ),
@@ -1701,10 +1712,10 @@ window.__ModuleLoader__.load({
           const text = `${phase.title ?? ''} ${phase.summary ?? ''} ${(phase.nextSteps ?? []).join(' ')} ${problems.map((item) => `${item.statement ?? ''} ${item.resolution ?? ''}`).join(' ')}`.toLowerCase()
           if (!text.includes(needle) && !(branch?.title ?? '').toLowerCase().includes(needle)) continue
           const statement = problem !== null ? problem.statement : (phase.summary ?? phase.title ?? '')
-          hits.push({ projectId: project.id, projectTitle: project.title, branchId: phase.branchId ?? 'main', branchTitle: branch?.title ?? '主线', phaseId: phase.id, phaseTitle: phase.title, status: phase.status, snippet: String(statement).slice(0, 120), problem: problem?.statement ?? null })
+          hits.push({ projectId: project.id, projectTitle: project.title, branchId: phase.branchId ?? 'main', branchTitle: branch?.title ?? '主线', phaseId: phase.id, phaseTitle: phase.title, status: phase.status, snippet: uslice(String(statement), 120), problem: problem?.statement ?? null })
         }
       }
-      return hits.slice(0, 40)
+      return uslice(hits, 40)
     }
 
     function SearchResults({ projects, query }) {
@@ -1763,17 +1774,17 @@ window.__ModuleLoader__.load({
         'div',
         { className: 'pj-notice pj-failures', role: 'status', 'aria-live': 'polite' },
         h('div', { className: 'pj-gap-head' }, `总结失败的会话 ${failed.length} 个${skipped.length > 0 ? ` · 已跳过 ${skipped.length} 个` : ''}`),
-        failed.slice(0, 5).map(({ project, session }) =>
+        uslice(failed, 5).map(({ project, session }) =>
           h(
             'div',
             { className: 'pj-gap-row', key: session.sessionId },
             h('span', { className: 'pj-gap-title', title: session.lastError ?? '' }, `${session.title ?? session.sessionId} · ${String(session.sessionId).slice(-8)}`),
-            h('span', { className: 'pj-sub' }, session.lastError ? String(session.lastError).slice(0, 90) : '没记下失败原因'),
+            h('span', { className: 'pj-sub' }, session.lastError ? uslice(String(session.lastError), 90) : '没记下失败原因'),
             h('button', { className: 'pj-btn ghost', type: 'button', 'aria-label': `重试总结 ${session.title ?? session.sessionId}`, disabled: busy === session.sessionId, onClick: act('summary-retry', () => retry(session)) }, busy === session.sessionId ? '重试中…' : '重试'),
           ),
         ),
         skipped.length > 0
-          ? h('div', { className: 'pj-sub' }, `已跳过、不会自动重试：${skipped.slice(0, 5).map(({ session }) => `${session.title ?? String(session.sessionId).slice(-8)}（${String(session.lastError ?? '达到重试上限或没有可总结内容').slice(0, 40)}）`).join('；')}`)
+          ? h('div', { className: 'pj-sub' }, `已跳过、不会自动重试：${uslice(skipped, 5).map(({ session }) => `${session.title ?? String(session.sessionId).slice(-8)}（${uslice(String(session.lastError ?? '达到重试上限或没有可总结内容'), 40)}）`).join('；')}`)
           : null,
         h('div', { className: 'pj-row' },
           h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('failure-dismiss', () => setState({ failureDismissed: true })) }, '本次先不显示'),
@@ -2239,7 +2250,6 @@ window.__ModuleLoader__.load({
     }
 
     function Inspector({ project, data, phase, branch, panePage, insTab, chain }) {
-      const openSession = (sessionId) => { void openSessionById(sessionId) }
       if (project === null) return h('div', { className: 'pj-ins' }, h('div', { className: 'pj-ins-body' }, h('div', { className: 'pj-empty2' }, '还没有项目')))
       if (panePage === 'trash') {
         return h('div', { className: 'pj-ins' },
@@ -2293,7 +2303,7 @@ window.__ModuleLoader__.load({
             phase.summary ? h('div', { className: 'pj-p', style: { whiteSpace: 'pre-wrap', color: 'var(--pj-text-secondary)' } }, phase.summary) : h('div', { className: 'pj-empty2' }, '还没有总结'),
           ),
           evidenced.length > 0
-            ? h('div', { className: 'pj-sec' }, h('div', { className: 'pj-sec-h' }, '问题'), evidenced.slice(0, 3).map((problem) => h('div', { className: `pj-item`, key: problem.id }, h('div', { className: 'pj-item-t' }, problem.statement), problem.resolution ? h('div', { className: 'pj-item-s' }, `处理：${problem.resolution}`) : null)))
+            ? h('div', { className: 'pj-sec' }, h('div', { className: 'pj-sec-h' }, '问题'), uslice(evidenced, 3).map((problem) => h('div', { className: `pj-item`, key: problem.id }, h('div', { className: 'pj-item-t' }, problem.statement), problem.resolution ? h('div', { className: 'pj-item-s' }, `处理：${problem.resolution}`) : null)))
             : null,
           readOnly ? null : h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
             h('button', { className: 'pj-btn', type: 'button', onClick: act('phase-edit-open', () => setState({ editingPhaseId: phase.id, editingPhaseProjectId: project.id })) }, '改阶段'),
@@ -2349,8 +2359,11 @@ window.__ModuleLoader__.load({
           phase.sessions.length === 0 ? h('div', { className: 'pj-empty2' }, '这个阶段还没有会话') : phase.sessions.map((sessionId) => {
             const rec = (project.sessions ?? []).find((item) => item.sessionId === sessionId)
             return h('div', { className: 'pj-item', key: sessionId, style: { display: 'flex', gap: 8, alignItems: 'center' } },
-              h('span', { className: 'pj-item-t', style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: rec?.cwd ?? '' }, rec?.title ?? `未命名会话 · ${String(sessionId).slice(-8)}`),
-              h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('session-open', () => openSession(sessionId)) }, '打开'),
+              h('span', { className: 'pj-item-t', style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: rec?.cwd ?? '' },
+                rec?.title ?? `未命名会话 · ${String(sessionId).slice(-8)}`,
+                rec?.archived === true ? h('span', { className: 'pj-chip dead', title: '该会话在 DSH 里已归档' }, '已归档') : (rec?.alive === false ? h('span', { className: 'pj-chip dead', title: '该会话已不在列表里（可能被删除）' }, '已丢失') : null),
+              ),
+              h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('session-open', () => { void openSessionById(sessionId, project.id) }) }, '打开'),
             )
           }),
         )
@@ -2372,7 +2385,7 @@ window.__ModuleLoader__.load({
           h('button', { className: 'pj-btn', type: 'button', onClick: act('phase-edit-open', () => setState({ editingPhaseId: phase.id, editingPhaseProjectId: project.id })) }, '改阶段'),
           h('button', { className: 'pj-btn', type: 'button', onClick: act('fork-open', () => { void startForkOf(project, phase) }) }, '从这开分支'),
           h('span', { style: { flex: 1 } }),
-          phase.sessions.length > 0 ? h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('session-open-first', () => openSession(phase.sessions[phase.sessions.length - 1])) }, '打开会话') : null,
+          phase.sessions.length > 0 ? h('button', { className: 'pj-btn ghost', type: 'button', onClick: act('session-open-first', () => { void openSessionById(phase.sessions[phase.sessions.length - 1], project.id) }) }, '打开会话') : null,
         ),
       )
     }
@@ -2382,7 +2395,7 @@ window.__ModuleLoader__.load({
         const seed = await api('/api/branch/seed', { projectId: project.id, phaseId: phase.id })
         setState({ forkDraft: { projectId: project.id, phaseId: phase.id, phaseTitle: phase.title, isRedo: phase.redoOf !== null && phase.redoOf !== undefined, fromSeq: seed.fromSeq, title: seed.title, prompt: seed.prompt, context: seed.context ?? null } })
       } catch (error) {
-        beacon('fork-error:' + String(error?.message ?? error).slice(0, 80))
+        beacon('fork-error:' + uslice(String(error?.message ?? error), 80))
         setState({ error: String(error?.message ?? error) })
       }
     }
@@ -2428,12 +2441,12 @@ window.__ModuleLoader__.load({
         try {
           return render(props)
         } catch (error) {
-          const key = `${label}:${String(error).slice(0, 80)}`
+          const key = `${label}:${uslice(String(error), 80)}`
           if (!reported.has(key)) {
             reported.add(key)
             const route = base ?? ROUTES[0]
             fetch(`${route}/api/beacon?e=render-error&d=${encodeURIComponent(key)}`).catch(() => {})
-            setTimeout(() => setState({ error: `面板渲染出错（${label}）：${String(error?.message ?? error).slice(0, 120)}` }), 0)
+            setTimeout(() => setState({ error: `面板渲染出错（${label}）：${uslice(String(error?.message ?? error), 120)}` }), 0)
           }
           // 出错时退化成可读提示，而不是静默空白——否则用户会以为「点了没反应」。
           return h('div', { className: 'pj-root', style: { padding: 16, fontSize: 12, color: 'var(--pj-label-warning)' } }, `这块内容渲染失败（${label}），右上角关掉面板再打开可重试。`)
@@ -2442,20 +2455,53 @@ window.__ModuleLoader__.load({
     }
 
     let uiWorkspace = null
+    let ctxRef = null
 
-    function openSessionById(sessionId) {
+    // 「打开会话」= 跳回产生这个阶段的那条对话。不要求该会话仍是当前 selection，
+    // 但归档/删除的会话打不开：先问宿主它还在不在，再给出可操作的原因。
+    async function openSessionById(sessionId, projectId) {
+      beacon('open-session')
+      // 服务在 apply 时可能还没注册（client 插件加载顺序不保证），这里每次现取。
+      let ui = uiWorkspace
       try {
-        beacon('open-session')
-        const ui = uiWorkspace
-        if (ui === null || typeof ui.openSession !== 'function') {
-          setState({ error: '会话跳转不可用（客户端未暴露 uiWorkspace），请在左侧边栏手动打开该会话' })
-          return
-        }
-        ui.openSession(sessionId)
-        setState({ open: false })
-      } catch (error) {
-        setState({ error: `打开会话失败：${String(error?.message ?? error).slice(0, 80)}` })
+        if (typeof ctxRef?.get === 'function') ui = ctxRef.get('uiWorkspace') ?? ui
+      } catch {}
+      if (ui === null || typeof ui.openSession !== 'function') {
+        beacon('open-session-no-service')
+        setState({ error: '会话跳转不可用：客户端没有暴露 uiWorkspace（DSH 版本差异）。可先在左侧边栏找到该会话手动打开。' })
+        return
       }
+      const tryOpen = (label) => {
+        ui.openSession(sessionId)
+        beacon(`open-session-ok:${label}`)
+        setState({ open: false })
+        return true
+      }
+      try {
+        return tryOpen('direct')
+      } catch (error) {
+        beacon('open-session-direct-fail:' + uslice(String(error?.message ?? error), 60))
+      }
+      // 会话属于还没连接过的 workspace 时，客户端 manager 里没有它，openSession 会抛错。
+      // 先让客户端连接该 workspace（会复用一个空白会话），再重试一次。
+      if (typeof projectId === 'string' && projectId !== '' && projectId !== 'unassigned' && typeof ui.openWorkspace === 'function') {
+        try {
+          await ui.openWorkspace(projectId)
+          return tryOpen('via-workspace')
+        } catch (error) {
+          beacon('open-session-workspace-fail:' + uslice(String(error?.message ?? error), 60))
+        }
+      }
+      let archived = false
+      try {
+        const live = await api('/api/session-live', { sessionId })
+        archived = live.archived === true
+      } catch {}
+      if (archived) {
+        setState({ error: '这个会话已经归档，跳不过去。在 DSH 侧边栏的「已归档」里恢复它，再回来打开。' })
+        return
+      }
+      setState({ error: '打开会话失败：客户端里还没有这条会话（可能属于尚未连接的项目，或已被删除）。先在左侧边栏切到该项目打开一次，再回来点。' })
     }
 
     async function openArtifact(project, name) {
@@ -2467,7 +2513,7 @@ window.__ModuleLoader__.load({
           setState({ notice: `没找到文件「${name}」：它可能已被移动或删除；可先在项目目录里找一下。` })
         }
       } catch (error) {
-        setState({ error: `打开文件失败：${String(error?.message ?? error).slice(0, 80)}` })
+        setState({ error: `打开文件失败：${uslice(String(error?.message ?? error), 80)}` })
       }
     }
 
@@ -2511,19 +2557,20 @@ window.__ModuleLoader__.load({
     function apply(ctx) {
       note(`client-boot:${document.visibilityState}`)
       try {
+        ctxRef = ctx
         uiWorkspace = typeof ctx.get === 'function' ? ctx.get('uiWorkspace') : null
         note(`ui-workspace:${uiWorkspace === null ? 'missing' : 'ready'}`)
       } catch (error) {
-        note(`ui-workspace-error:${String(error).slice(0, 60)}`)
+        note(`ui-workspace-error:${uslice(String(error), 60)}`)
       }
-      note('client-v27')
+      note('client-v28')
       window.__pjDebug = { open: () => openPanel(), close: () => closePanel(), store, stats: () => store.stats }
       const mount = (slot, definition, component) => {
         try {
           ctx.slots.inject(slot, () => ctx.slots.register(definition, component))
           note(`slot-ok:${slot}`)
         } catch (error) {
-          note(`slot-fail:${slot}:${String(error).slice(0, 70)}`)
+          note(`slot-fail:${slot}:${uslice(String(error), 70)}`)
         }
       }
       mount('shell.overlay', { name: 'shell.overlay', id: 'project-journal-panel' }, GuardedPanelHost)
@@ -2556,3 +2603,5 @@ window.__ModuleLoader__.load({
     }
   },
 })
+
+// open-session diagnostics: open-session-ok / direct-fail / workspace-fail / archived
